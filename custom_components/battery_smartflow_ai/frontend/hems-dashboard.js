@@ -590,7 +590,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       topology_circuit_add_help: { de: "Lege erst fest, über welchen Stromkreis ein System angeschlossen ist. Trage eine Phase und nur bekannte Grenzen ein. Eine gemeinsame vorgeschaltete Sicherung kannst du später als übergeordneten Stromkreis auswählen.", en: "First describe the circuit a system is connected to. Select its phase and enter only known limits. You can add a shared upstream circuit and link it afterward.", fr: "Décrivez d’abord le circuit auquel le système est raccordé. Choisissez sa phase et saisissez uniquement les limites connues.", nl: "Beschrijf eerst het circuit waarop het systeem is aangesloten. Kies de fase en vul alleen bekende limieten in." },
       topology_domain_add_help: { de: "Ein Lastbereich benennt, welche Verbraucher an einem Ausgang hängen. Für Off-Grid- und USV-Ausgänge ist ein Insel-Lastbereich erforderlich.", en: "A load domain names the loads served by an output. Off-grid and UPS outputs require an off-grid load domain.", fr: "Une zone de charge décrit les appareils alimentés par une sortie. Les sorties hors réseau/UPS nécessitent une zone dédiée.", nl: "Een lastgebied beschrijft welke verbruikers op een uitgang zijn aangesloten. Off-grid- en UPS-uitgangen vereisen een off-grid-lastgebied." },
       topology_connection_add_help: { de: "Ordne jedem eingerichteten Zendure-System den tatsächlichen Netzausgang oder Insel-Ausgang und seinen Stromkreis zu. Off-Grid-Ausgänge brauchen zusätzlich einen Insel-Lastbereich.", en: "Map each configured Zendure system's actual grid or off-grid output to its circuit. Off-grid outputs also need an off-grid load domain.", fr: "Associez la sortie réseau ou hors réseau réelle de chaque système Zendure configuré à son circuit. Les sorties hors réseau nécessitent aussi une zone dédiée.", nl: "Koppel de werkelijke net- of off-grid-uitgang van elk ingesteld Zendure-systeem aan het circuit. Off-grid-uitgangen hebben ook een off-grid-lastgebied nodig." },
-      topology_review_help: { de: "Prüfe die Skizze. Erst mit „Topologie speichern“ werden alle Änderungen gemeinsam übernommen. Die Angaben verändern die Regelung in dieser Version nicht.", en: "Review the diagram. Nothing is saved until you choose Save topology. These settings do not change regulation in this version.", fr: "Vérifiez le schéma. Les changements ne sont enregistrés qu’en choisissant Enregistrer. Ils ne modifient pas la régulation dans cette version.", nl: "Controleer het schema. Wijzigingen worden pas opgeslagen wanneer je Opslaan kiest. Deze instellingen veranderen de regeling in deze versie niet." },
+      topology_review_help: { de: "Prüfe, ob alle Geräteausgänge mit dem passenden Stromkreis verbunden sind. Die Gruppenregelung berücksichtigt diese Zuordnung und die eingetragenen Grenzen.", en: "Review the diagram. Nothing is saved until you choose Save topology. These settings do not change regulation in this version.", fr: "Vérifiez le schéma. Les changements ne sont enregistrés qu’en choisissant Enregistrer. Ils ne modifient pas la régulation dans cette version.", nl: "Controleer het schema. Wijzigingen worden pas opgeslagen wanneer je Opslaan kiest. Deze instellingen veranderen de regeling in deze versie niet." },
       topology_continue_domains: { de: "Weiter zu Lastbereichen", en: "Continue to load domains", fr: "Continuer vers les zones de charge", nl: "Verder naar lastgebieden" },
       topology_continue_connections: { de: "Weiter zu Geräteausgängen", en: "Continue to device outputs", fr: "Continuer vers les sorties", nl: "Verder naar apparaatuitgangen" },
       topology_continue_review: { de: "Zur Übersicht und Prüfung", en: "Review topology", fr: "Vérifier la topologie", nl: "Topologie controleren" },
@@ -601,6 +601,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       topology_add_to_draft: { de: "Zum Entwurf hinzufügen", en: "Add to draft", fr: "Ajouter au brouillon", nl: "Aan concept toevoegen" },
       topology_apply_draft: { de: "Änderung übernehmen", en: "Apply change", fr: "Appliquer la modification", nl: "Wijziging toepassen" },
       topology_remove_from_draft: { de: "Aus Entwurf entfernen", en: "Remove from draft", fr: "Supprimer du brouillon", nl: "Uit concept verwijderen" },
+      group_pv_aggregate_one_sensor: { de: "Für mehrere Leistungssensoren wähle Einzelmessungen.", en: "Use component measurements for multiple power sensors." },
+      group_pv_source_conflict: { de: "Name, Sensor oder Prognose ist bereits der PV-Quelle {source} zugeordnet.", en: "The name, sensor, or forecast is already assigned to PV source {source}." },
+      invalid_energy_scope: { de: "Prüfe die Netzmessart und die Sensorzuordnung. Aktive Gruppen brauchen eine gültige Netzmessung.", en: "Check the grid mode and sensor assignment. Active groups require valid grid measurements." },
       topology_no_outputs: { de: "Noch kein Geräteausgang zugeordnet", en: "No device output mapped yet", fr: "Aucune sortie associée", nl: "Nog geen apparaatuitgang gekoppeld" },
       topology_upstream: { de: "Gemeinsame vorgeschaltete Grenze", en: "Shared upstream limit", fr: "Limite amont partagée", nl: "Gedeelde bovenliggende limiet" },
       topology_step_of: { de: "Schritt", en: "Step", fr: "Étape", nl: "Stap" },
@@ -1823,7 +1826,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
     }
     this._optionsOpeningStepId = null;
     this._optionsFlowError = "";
-    if (step.step_id === "group_wizard_strategy") this._groupWizardActive = true;
+    if (["group_create", "group_edit", "group_wizard_strategy"].includes(step.step_id)) {
+      this._groupWizardActive = true;
+    }
     this._optionsRevision = (this._optionsRevision || 0) + 1;
       const title = step.step_id === "general" ? this._t("general_settings")
       : step.step_id === "smart_mode" ? this._t("smart_mode_settings")
@@ -1847,6 +1852,13 @@ class BatterySmartFlowDashboard extends HTMLElement {
       if (this._groupWizardActive) menuLabel.topology_save = "options_continue";
       const buttons = (step.menu_options || []).filter((option) => menuLabel[option]).map((option) => `<button class="apply ${option === "topology_save" ? "topology-save-button" : ""}" type="button" data-options-next="${this._escape(option)}">${this._escape(this._t(menuLabel[option]))}</button>`).join("");
       let preview = "";
+      const missingOutputs = Number(step.description_placeholders?.missing_outputs || 0);
+      if (missingOutputs > 0) {
+        const message = (this._hass?.language || "").startsWith("de")
+          ? `Ordne die fehlenden Geräteausgänge zu (${missingOutputs}), damit die Gruppe regeln kann.`
+          : `Assign the missing device outputs (${missingOutputs}) to enable group regulation.`;
+        preview = `<p class="topology-form-errors" role="alert">${this._escape(message)}</p>`;
+      }
       if (step.step_id === "group_wizard_review") {
         const name = step.description_placeholders?.group_name || "";
         const count = step.description_placeholders?.member_count || "0";
@@ -1869,9 +1881,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       if (step.step_id === "topology_review" && step.description_placeholders?.topology_preview) {
         try {
           const topology = JSON.parse(step.description_placeholders.topology_preview);
-          preview = `<section class="topology-review-card"><h3>${this._escape(this._t("topology_review"))}</h3>${this._topologyDiagram(topology)}</section>`;
+          preview += `<section class="topology-review-card"><h3>${this._escape(this._t("topology_review"))}</h3>${this._topologyDiagram(topology)}</section>`;
         } catch {
-          preview = `<p class="muted">${this._escape(this._t("topology_preview_unavailable"))}</p>`;
+          preview += `<p class="muted">${this._escape(this._t("topology_preview_unavailable"))}</p>`;
         }
       }
       content = `${this._groupWizardChrome(step.step_id)}${this._groupWizardActive ? "" : this._topologyWizardChrome(step.step_id)}${preview}<div class="topology-menu-actions">${buttons}</div>`;
@@ -1948,11 +1960,13 @@ class BatterySmartFlowDashboard extends HTMLElement {
         ? step.step_id.endsWith("_add") ? "topology_add_to_draft"
           : step.step_id.endsWith("_edit") ? "topology_apply_draft"
             : step.step_id.endsWith("_remove") ? "topology_remove_from_draft" : "options_continue"
-        : ["general", "smart_mode", "expert_cell_voltage_config", "group_edit", "group_remove", "native_zendure_controller"].includes(step.step_id) ? "options_save" : "options_continue";
+        : ["general", "smart_mode", "expert_cell_voltage_config", "group_remove", "native_zendure_controller"].includes(step.step_id) ? "options_save" : "options_continue";
       const groupBack = step.step_id === "group_wizard_strategy" ? `<button class="apply options-wizard-back" type="button" data-options-next="group_wizard_back_systems">${this._escape(this._t("group_wizard_back_systems"))}</button>` : "";
       content = `${this._groupWizardChrome(step.step_id)}${this._groupWizardActive ? "" : this._topologyWizardChrome(step.step_id)}${fields}${groupBack}<button class="apply" type="button" data-options-submit>${this._escape(this._t(topologyAction))}</button>`;
     }
-    const errors = Object.values(step.errors || {}).map((key) => this._t(key)).filter(Boolean);
+    const errors = Object.values(step.errors || {}).map((key) => (
+      this._t(key).replace("{source}", step.description_placeholders?.conflicting_source || "")
+    )).filter(Boolean);
     if (errors.length) content = `<div class="topology-form-errors" role="alert">${errors.map((message) => `<p>${this._escape(message)}</p>`).join("")}</div>${content}`;
     this._optionsFlowTitle = title;
     this._optionsStepId = step.step_id;

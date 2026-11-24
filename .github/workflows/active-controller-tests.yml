@@ -22,6 +22,10 @@ jobs:
           tests/test_native_device_setup.py
           tests/test_dev1_5_cell_voltage_and_house_load.py
           tests/test_native_power_controller.py
+          tests/test_native_source_fusion.py
+          tests/test_zendure_hems_activity.py
+          tests/test_group_wizard.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
       - name: Vergleiche Fehler mit dem Basiscommit
         run: |
           git worktree add --detach "$RUNNER_TEMP/base" 6c59d9f9e68321fd6a96560cdca557d2c0f31165
@@ -29,8 +33,8 @@ jobs:
           python -m pytest -q --tb=no > "$RUNNER_TEMP/pr-pytest.txt" || test $? -eq 1
           tail -n 1 "$RUNNER_TEMP/base-pytest.txt"
           tail -n 1 "$RUNNER_TEMP/pr-pytest.txt"
-          awk '/^(FAILED|SUBFAILED)/' "$RUNNER_TEMP/base-pytest.txt" | sort -u > "$RUNNER_TEMP/base-failures.txt"
-          awk '/^(FAILED|SUBFAILED)/' "$RUNNER_TEMP/pr-pytest.txt" | sort -u > "$RUNNER_TEMP/pr-failures.txt"
+          awk '/^(FAILED|SUBFAILED)/ { for (i=1; i<=NF; i++) if ($i ~ /^tests\//) print $i }' "$RUNNER_TEMP/base-pytest.txt" | sort -u > "$RUNNER_TEMP/base-failures.txt"
+          awk '/^(FAILED|SUBFAILED)/ { for (i=1; i<=NF; i++) if ($i ~ /^tests\//) print $i }' "$RUNNER_TEMP/pr-pytest.txt" | sort -u > "$RUNNER_TEMP/pr-failures.txt"
           comm -13 "$RUNNER_TEMP/base-failures.txt" "$RUNNER_TEMP/pr-failures.txt" > "$RUNNER_TEMP/new-failures.txt"
           cat "$RUNNER_TEMP/new-failures.txt"
           test ! -s "$RUNNER_TEMP/new-failures.txt"

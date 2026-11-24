@@ -305,6 +305,8 @@
       "topology_record_missing": "The selected topology item no longer exists."
     },
     "error": {
+      "group_pv_aggregate_one_sensor": "Select one power sensor for an aggregate source. Use component measurements for multiple sensors.",
+      "group_pv_source_conflict": "The name, sensor, or forecast is already assigned to PV source {conflicting_source}.",
       "invalid_zensdk_ip": "Enter a private IPv4 address for the Zendure device.",
       "zensdk_ip_unsupported": "This Zendure model does not support direct ZenSDK readings.",
       "zensdk_ip_clear_conflict": "Enter an address or select automatic discovery, not both.",

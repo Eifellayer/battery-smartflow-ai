@@ -286,6 +286,8 @@
       "topology_record_missing": "Der ausgewählte Topologie-Eintrag ist nicht mehr vorhanden."
     },
     "error": {
+      "group_pv_aggregate_one_sensor": "Für einen Gesamtzähler wähle genau einen Leistungssensor. Für mehrere Sensoren wähle Einzelmessungen.",
+      "group_pv_source_conflict": "Name, Sensor oder Prognosequelle ist bereits der PV-Quelle „{conflicting_source}“ zugeordnet.",
       "invalid_zensdk_ip": "Gib eine private IPv4-Adresse des Zendure-Geräts ein.",
       "zensdk_ip_unsupported": "Dieses Zendure-Modell unterstützt keine direkten ZenSDK-Messwerte.",
       "zensdk_ip_clear_conflict": "Gib eine Adresse ein oder wähle automatische Erkennung, nicht beides.",
@@ -329,6 +331,157 @@
         },
         "data_description": {
           "installed_pv_wp": "Installierte theoretische PV-Modulleistung der Anlage in Wp. Dieser Wert wird für relative PV-Kontextschwellen und weitere PV-bezogene Logik verwendet."
+        }
+      },
+      "topology_circuits": {
+        "title": "Stromkreise festlegen",
+        "description": "Lege die Stromkreise an, an denen die Speicher angeschlossen sind. Trage nur bekannte Grenzen ein.",
+        "menu_options": {
+          "topology_circuit_add": "Stromkreis hinzufügen",
+          "topology_circuit_edit_select": "Stromkreis bearbeiten",
+          "topology_circuit_remove": "Stromkreis entfernen",
+          "group_wizard_back_strategy": "Zurück zum Gruppenziel",
+          "topology_continue_connections": "Weiter zu den Geräteausgängen",
+          "topology_continue_domains": "Weiter zu den Lastbereichen"
+        }
+      },
+      "topology_domains": {
+        "title": "Insel- und USV-Lastbereiche",
+        "menu_options": {
+          "topology_domain_add": "Lastbereich hinzufügen",
+          "topology_domain_edit_select": "Lastbereich bearbeiten",
+          "topology_domain_remove": "Lastbereich entfernen",
+          "topology_back_circuits": "Zurück zu den Stromkreisen",
+          "topology_continue_connections": "Weiter zu den Geräteausgängen"
+        }
+      },
+      "topology_connections": {
+        "title": "Geräteausgänge zuordnen",
+        "description": "Ordne jedem Gerät den Stromkreis seines Netzanschlusses zu.",
+        "menu_options": {
+          "topology_connection_add": "Geräteausgang zuordnen",
+          "topology_connection_edit_select": "Zuordnung bearbeiten",
+          "topology_connection_remove": "Zuordnung entfernen",
+          "topology_back_circuits": "Zurück zu den Stromkreisen",
+          "topology_back_domains": "Zurück zu den Lastbereichen",
+          "topology_continue_review": "Zuordnungen prüfen"
+        }
+      },
+      "topology_review": {
+        "title": "Stromkreise und Ausgänge prüfen",
+        "description": "Fehlende Geräteausgänge für die aktive Regelung: {missing_outputs}. Sind alle zugeordnet, kannst du fortfahren.",
+        "menu_options": {
+          "topology_save": "Zuordnungen übernehmen und fortfahren",
+          "topology_back_circuits": "Stromkreise bearbeiten",
+          "topology_back_domains": "Lastbereiche bearbeiten",
+          "topology_back_connections": "Geräteausgänge bearbeiten"
+        }
+      },
+      "topology_circuit_edit_select": {
+        "title": "Stromkreis auswählen",
+        "data": {
+          "record_id": "Stromkreis"
+        }
+      },
+      "topology_domain_edit_select": {
+        "title": "Lastbereich auswählen",
+        "data": {
+          "record_id": "Lastbereich"
+        }
+      },
+      "topology_connection_edit_select": {
+        "title": "Geräteausgang auswählen",
+        "data": {
+          "record_id": "Geräteausgang"
+        }
+      },
+      "group_wizard_strategy": {
+        "title": "Gruppenziel und Zusammenarbeit festlegen",
+        "data": {
+          "objective": "Gruppenziel",
+          "control_enabled": "Gestufte Gruppenregelung aktivieren",
+          "balancing_policy": "Verteilung der Leistung",
+          "soc_delta_pct": "SoC-Abstand zum Wechsel (%)",
+          "peak_import_limit_w": "Maximaler Netzbezug (W)",
+          "ups_charge_target_soc_pct": "USV-Ladeziel (%)",
+          "ups_reserve_soc_pct": "USV-Reserve (%)"
+        }
+      },
+      "group_wizard_sensors": {
+        "title": "Netzmessung zuordnen",
+        "description": "Wähle einen vorzeichenbehafteten Netzzähler oder getrennte Sensoren für Bezug und Einspeisung.",
+        "data": {
+          "scope_name": "Name der Sensorzuordnung",
+          "grid_mode": "Art der Netzmessung",
+          "grid_power_entities": "Vorzeichenbehaftete Netzleistung",
+          "grid_phase_power_entities": "Netzleistung je Phase",
+          "grid_import_entities": "Netzbezug",
+          "grid_export_entities": "Netzeinspeisung",
+          "price_entity": "Bezugspreis",
+          "export_price_entity": "Einspeisepreis"
+        }
+      },
+      "group_wizard_pv_sources": {
+        "title": "PV und Prognose zuordnen",
+        "description": "Ergänze die PV-Quellen dieser Gruppe oder gehe direkt zur Übersicht.",
+        "menu_options": {
+          "group_wizard_continue_review": "Gruppe prüfen",
+          "group_wizard_pv_add": "PV-Quelle hinzufügen",
+          "group_wizard_pv_remove_select": "PV-Quelle entfernen",
+          "group_wizard_back_sensors": "Netzmessung bearbeiten"
+        }
+      },
+      "group_wizard_pv_add": {
+        "title": "PV-Quelle hinzufügen",
+        "data": {
+          "source_name": "Name der PV-Quelle",
+          "source_mode": "Art der Leistungsmessung",
+          "power_entities": "PV-Leistungssensoren",
+          "installed_power_wp": "Installierte PV-Leistung (Wp)",
+          "forecast_entry_ids": "Prognosequellen"
+        }
+      },
+      "group_wizard_pv_remove_select": {
+        "title": "PV-Quelle entfernen",
+        "data": {
+          "source_id": "PV-Quelle"
+        }
+      },
+      "group_wizard_review": {
+        "title": "Batteriegruppe prüfen und speichern",
+        "description": "Gruppe: {group_name}. Systeme: {members}. Netzmessung: {grid_sensors}. PV-Quellen: {pv_sources}.",
+        "menu_options": {
+          "group_wizard_save": "Batteriegruppe speichern",
+          "group_wizard_back_sensors": "Netzmessung und PV bearbeiten",
+          "topology_back_connections": "Geräteausgänge bearbeiten"
+        }
+      },
+      "topology_circuit_edit": {
+        "title": "Stromkreis bearbeiten",
+        "description": "Es wird keine Strom- oder Leistungsgrenze vorausgesetzt. Trage nur tatsächlich geltende Grenzen ein.",
+        "data": {
+          "name": "Name",
+          "phase": "Phase",
+          "max_current_a": "Maximalstrom (A)",
+          "max_power_w": "Maximale Leistung (W)",
+          "parent_circuit_id": "Gemeinsame vorgeschaltete Sicherung"
+        }
+      },
+      "topology_domain_edit": {
+        "title": "Lastbereich bearbeiten",
+        "data": {
+          "name": "Name des Lastbereichs",
+          "kind": "Art des Lastbereichs"
+        }
+      },
+      "topology_connection_edit": {
+        "title": "Geräteausgang bearbeiten",
+        "data": {
+          "device_id": "Zendure-System",
+          "output_id": "Ausgangsbezeichnung",
+          "kind": "Ausgangsart",
+          "circuit_id": "Stromkreis",
+          "load_domain_id": "Lastbereich"
         }
       },
       "systems_groups": {"title": "Systeme & Gruppen", "description": "Lege dauerhafte Gruppen für eingerichtete Systeme an. Neu erkannte Geräte bleiben ungruppiert, bis du sie zuordnest. Eine Gruppenmitgliedschaft aktiviert keine gleichzeitige Leistungsregelung.", "menu_options": {"group_create": "Gruppe anlegen", "group_edit_select": "Gruppe bearbeiten oder Systeme verschieben", "group_remove": "Gruppe entfernen"}},
