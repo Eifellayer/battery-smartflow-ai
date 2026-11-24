@@ -44,6 +44,15 @@ DEFAULT_STALE_AFTER_SECONDS = 90.0
 LEGACY_GROUPED_REPORT_STALE_AFTER_SECONDS = 180.0
 _LEGACY_GROUPED_REPORT_MODELS = LEGACY_GROUPED_PACK_MODELS
 
+# Zendure reports PV input only when the value changes.  At night it stays at
+# 0 W and the device sends no further PV report, so age alone says nothing
+# about validity.  Expiring it made the engine switch to ``pv_sensor_invalid``
+# about three minutes after every (re)load and stop discharging.  The value
+# still turns OFFLINE with the device, and command eligibility is gated
+# independently (SoC, HEMS, protection), so PV is the only target which may
+# stay valid without a fresh report.
+_AGE_INDEPENDENT_TARGETS = frozenset({"pv_power_w"})
+
 
 class MappingScope(StrEnum):
     MAIN = "main"
@@ -845,6 +854,7 @@ class ZendureCloudNormalizer:
             validity = ValueValidity.OFFLINE
         elif (
             validity is ValueValidity.VALID
+            and target not in _AGE_INDEPENDENT_TARGETS
             and (now - observed.observed_at).total_seconds()
             > self._stale_after_for(system_id)
         ):
