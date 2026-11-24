@@ -37,4 +37,19 @@ jobs:
           awk '/^(FAILED|SUBFAILED)/ { for (i=1; i<=NF; i++) if ($i ~ /^tests\//) print $i }' "$RUNNER_TEMP/pr-pytest.txt" | sort -u > "$RUNNER_TEMP/pr-failures.txt"
           comm -13 "$RUNNER_TEMP/base-failures.txt" "$RUNNER_TEMP/pr-failures.txt" > "$RUNNER_TEMP/new-failures.txt"
           cat "$RUNNER_TEMP/new-failures.txt"
+          python - "$RUNNER_TEMP/base-pytest.txt" "$RUNNER_TEMP/pr-pytest.txt" <<'PY'
+          import collections
+          import pathlib
+          import re
+          import sys
+
+          def failed_checks(filename):
+              return collections.Counter(re.findall(
+                  r"^(?:SUB)?FAILED(?:\([^\n]*?\))? (tests/\S+)",
+                  pathlib.Path(filename).read_text(), flags=re.MULTILINE,
+              ))
+
+          base, branch = map(failed_checks, sys.argv[1:])
+          print("Additional failures within existing failing tests:", branch - base)
+          PY
           test ! -s "$RUNNER_TEMP/new-failures.txt"
