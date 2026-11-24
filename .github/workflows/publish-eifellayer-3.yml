@@ -1,0 +1,58 @@
+name: Publish 6.0.10-eifellayer.3 prerelease
+on:
+  push:
+    branches: ['release/6.0.10-eifellayer.3']
+    paths: ['.github/workflows/publish-eifellayer-3.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-eifellayer-3
+  cancel-in-progress: false
+jobs:
+  test:
+    if: github.ref == 'refs/heads/release/6.0.10-eifellayer.3'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: efcede2920c53024e4f08dc35948d434ee3248bb
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest voluptuous
+      - name: Check integration version
+        run: python -c "import json; assert json.load(open('custom_components/battery_smartflow_ai/manifest.json'))['version'] == '6.0.10-eifellayer.3'"
+      - name: Regression tests
+        run: >-
+          python -m pytest -q
+          tests/test_native_beta2.py
+          tests/test_native_device_setup.py
+          tests/test_dev1_5_cell_voltage_and_house_load.py
+          tests/test_native_power_controller.py
+          tests/test_native_source_fusion.py
+          tests/test_zendure_hems_activity.py
+          tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Publish tested source as prerelease
+        run: |
+          if gh release view 6.0.10-eifellayer.3 >/dev/null 2>&1; then
+            echo "Release already exists; leaving it unchanged."
+            exit 0
+          fi
+          gh release create 6.0.10-eifellayer.3 \
+            --target efcede2920c53024e4f08dc35948d434ee3248bb \
+            --title "Battery SmartFlow AI 6.0.10-eifellayer.3" \
+            --prerelease \
+            --notes "Vorabversion: PV-Werte bleiben bei unverändertem Wert (z. B. nachts 0 W) gültig, solange das Gerät online ist. Fehlende Prognose-Auswahl im Gruppen-Assistenten ergänzt. Enthält die Korrekturen aus PR #1 und PR #2. Gezielte Regressionstests und JavaScript-Syntaxprüfung bestanden. HACS-Repository-Validierung und vollständiger Hardware-Test sind noch offen. Vor Einsatz an der Anlage Konfiguration und Schutzgrenzen prüfen."
