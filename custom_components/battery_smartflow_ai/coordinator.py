@@ -241,7 +241,8 @@ from .device_command import DeviceCommandBuilder, clamp_number_power_request
 from .command_execution_state import confirmed_command_state_updates
 from .adapters.home_assistant.clock import HomeAssistantClock
 from .adapters.home_assistant.state_store import HomeAssistantStateStore
-from .battery_groups import enabled_group_members, limit_group_power
+from .battery_groups import enabled_group_members, limit_group_power, reconcile_group_config, GROUP_OBJECTIVE_NEAR_ZERO
+from .group_feedback import GroupFeedback, RegulationQuality
 from .native_device_setup import native_device_profile_key
 from .v5_migration import migrate_persisted_v47_state
 from .command_effectiveness import (
@@ -970,6 +971,49 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 limit = min(limit, selected_limit_w)
             total += max(0.0, limit)
         return limit_group_power(self.entry.options, setting, total)
+
+    def _group_feedback_sample(self, runtime, *, now, grid_age_s, grid_valid):
+        """Use only complete, recent group AC measurements, never DC battery flow."""
+        if not grid_valid or grid_age_s is None or not 0 <= grid_age_s <= 15:
+            return None
+        if not getattr(runtime, "control_enabled", False):
+            return None
+        selected = getattr(runtime, "selected_device_id", None)
+        try:
+            groups = reconcile_group_config(self.entry.options.get(CONF_BATTERY_GROUPS))["groups"]
+            group = next((g for g in groups.values() if g["control_enabled"]
+                          and selected in g["members"]), None)
+        except (TypeError, ValueError):
+            return None
+        if not group or group.get("objective") != GROUP_OBJECTIVE_NEAR_ZERO or len(group["members"]) < 2:
+            return None
+        states = runtime.fresh_device_state_map()
+        total_in = total_out = 0.0
+        for member in group["members"]:
+            state = states.get(member)
+            if state is None:
+                return None
+            for field in ("ac_input_power_w", "ac_output_power_w"):
+                measured = getattr(state, field, None)
+                if measured is None or not measured.valid or measured.observed_at is None:
+                    return None
+                value = _to_float(measured.value, None)
+                age = (dt_util.as_utc(now) - dt_util.as_utc(measured.observed_at)).total_seconds()
+                if value is None or not math.isfinite(value) or value < 0 or not 0 <= age <= 30:
+                    return None
+                # A recent zero may legitimately be event-driven. For active
+                # flow, require tighter alignment with the grid observation.
+                if value > 30 and (age > 15 or abs(age - grid_age_s) > 10):
+                    return None
+                if field == "ac_input_power_w":
+                    total_in += value
+                else:
+                    total_out += value
+        mono = self._clock.monotonic()
+        previous = getattr(self, "_group_feedback_last_mono", None)
+        self._group_feedback_last_mono = mono
+        elapsed = 7.0 if previous is None else max(0.0, min(7.0, mono - previous))
+        return GroupFeedback(total_in, total_out, elapsed)
 
     def _productive_group_targets(
         self,
@@ -9317,6 +9361,18 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 offgrid_source_active=bool(offgrid_source_active),
             )
             
+            # Grid age must also be checked when performance timing is off.
+            feedback_grid_age = (
+                (dt_util.as_utc(now) - dt_util.as_utc(self._shelly_last_read_at)).total_seconds()
+                if self.entities.grid_mode in GRID_MODE_DIRECT_SHELLY and self._shelly_last_read_at is not None
+                else self._get_grid_state_age_seconds(now)
+            )
+            group_feedback = self._group_feedback_sample(
+                native_runtime, now=now, grid_age_s=feedback_grid_age,
+                grid_valid=grid_sensor_valid,
+            )
+            if group_feedback is None:
+                self._group_feedback_last_mono = None
             regulation_power_result = self._regulation_power_controller.calculate(
                 intent=strategy_intent,
                 arbiter=mode_arbiter_result,
@@ -9335,6 +9391,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if group_max_output_w is not None
                     else None
                 ),
+                group_feedback=group_feedback,
             )
 
             native_power_observed_at = None
@@ -11152,6 +11209,21 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             details["shadow_allocation"]["dispatch_status"] = self._persist.get("group_control_status")
             details["shadow_allocation"]["last_accepted_targets"] = self._persist.get("group_control_last_targets", {})
             details["shadow_allocation"]["handover_pending"] = self._persist.get("group_control_handover_pending")
+            quality = getattr(self, "_group_regulation_quality", None)
+            if quality is None:
+                quality = self._group_regulation_quality = RegulationQuality()
+            metadata = regulation_power_result.metadata
+            group_active = self._persist.get("group_control_status") == "group_control_active"
+            details["shadow_allocation"]["regulation_quality"] = quality.update(
+                self._clock.monotonic(),
+                float(grid_history_state.grid_now_w) - float(metadata.get("target_import_w", 0.0))
+                if grid_sensor_valid and group_active and details["shadow_allocation"].get("objective") == "near_zero"
+                else None,
+                deadband_w=float(metadata.get("effective_deadband_w", 30.0)),
+                limited=regulation_power_result.profile_limited,
+            )
+            details["shadow_allocation"]["feedback_active"] = bool(metadata.get("group_feedback_active"))
+            details["shadow_allocation"]["feedback_measured_ac_w"] = metadata.get("measured_ac_w")
 
             if timing_enabled and cycle_started_monotonic is not None:
                 details.update(
