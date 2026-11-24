@@ -194,6 +194,42 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         )
         assert sum(cmd.output_limit_w for cmd in targets.values()) == 0
 
+        # A pending 200 W correction may not accumulate additional output
+        # from repeated observations of the same residual import.
+        coordinator._persist["group_control_last_targets"] = {
+            "Hyper 2000": {"power_w": -200.0},
+            "SolarFlow 800 Plus": {"power_w": 0.0},
+        }
+        coordinator._persist["group_control_target_changed_at"] = now.isoformat()
+        intent.intent = "arbitrage_discharge"
+        demand = DeviceCommand("output", output_limit_w=500,
+                               metadata={"last_output_limit_w": 200})
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 200
+        assert targets["SolarFlow 800 Plus"].metadata["last_output_limit_w"] == 0
+        assert targets["Hyper 2000"].metadata["last_output_limit_w"] == 200
+        now += timedelta(seconds=13)
+        coordinator._get_grid = lambda: (60.0, 0.0)
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 250
+        coordinator._get_grid = lambda: (0.0, 150.0)
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 200
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=80), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 80
+        coordinator._persist.pop("group_control_last_targets")
+        coordinator._persist.pop("group_control_target_changed_at")
+        coordinator._get_grid = lambda: (600.0, 0.0)
+
         options.pop(SETTING_MAX_DISCHARGE)
         circuit["max_power_w"] = 1400
         started = await coordinator._execute_device_command(

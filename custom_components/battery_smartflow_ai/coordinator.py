@@ -1248,6 +1248,46 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else "group_pv_storage_grid_unavailable"
                 )
                 return (reason, None)
+        if (
+            objective == GROUP_OBJECTIVE_NEAR_ZERO
+            and target_w < 0
+            and getattr(strategy_intent, "intent", None) in {
+                "cover_deficit", "peak_discharge", "arbitrage_discharge", "manual_discharge",
+            }
+        ):
+            # Do not integrate the same residual import repeatedly while the
+            # previous group command is still settling. Export corrections
+            # and all lower safety/strategy limits remain immediately effective.
+            prior = self._persist.get("group_control_last_targets", {})
+            if isinstance(prior, Mapping) and set(prior) == set(members):
+                prior_output = sum(
+                    max(0.0, -float(item.get("power_w", 0.0)))
+                    for item in prior.values()
+                    if isinstance(item, Mapping)
+                )
+                prior_charge = sum(
+                    max(0.0, float(item.get("power_w", 0.0)))
+                    for item in prior.values()
+                    if isinstance(item, Mapping)
+                )
+                if prior_charge == 0.0 and -target_w > prior_output:
+                    if grid_import_w is None or grid_export_w is None:
+                        return ("group_near_zero_grid_unavailable", None)
+                    residual = float(grid_import_w) - float(grid_export_w)
+                    if not math.isfinite(residual):
+                        return ("group_near_zero_grid_unavailable", None)
+                    now = dt_util.as_utc(self._clock.utc_now())
+                    changed_at = _parse_dt(self._persist.get("group_control_target_changed_at"))
+                    settling = changed_at is not None and 0 <= (
+                        now - dt_util.as_utc(changed_at)
+                    ).total_seconds() < 12.0
+                    if settling or residual <= 25.0:
+                        target_w = -prior_output
+                    else:
+                        # Small positive corrections use the instantaneous
+                        # residual, not the delayed history or a full step.
+                        # Large real load jumps can still use the normal ramp.
+                        target_w = -min(-target_w, prior_output + max(0.0, residual - 10.0))
         if target_w > 0:
             target_w = limit_group_power(self.entry.options, SETTING_MAX_CHARGE, target_w)
         elif target_w < 0:
@@ -1325,7 +1365,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_id = allocation_item["device_id"]
             if device_id not in members:
                 continue
-            power_w = float(allocation_item["proposed_power_w"])
+            # Native transports encode integer watts. Floor rather than round
+            # up so the allocator's member and circuit limits remain intact.
+            power_w = float(math.floor(max(0.0, float(allocation_item["proposed_power_w"]))))
             if allocation.direction == "charge":
                 mode = "input"
                 input_w, output_w = power_w, 0.0
@@ -1368,6 +1410,23 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 ),
             )
+        # The builder's last_*_limit metadata describes the whole group.
+        # Passing it to an idle member forces an atomic zero write on every
+        # cycle even when that member is already idle.
+        previous = self._persist.get("group_control_last_targets", {})
+        previous = previous if isinstance(previous, Mapping) else {}
+        for device_id, item in targets.items():
+            old = previous.get(device_id)
+            if isinstance(old, Mapping):
+                old_power = float(old.get("power_w", 0.0))
+                targets[device_id] = replace(
+                    item,
+                    metadata={
+                        **item.metadata,
+                        "last_input_limit_w": max(0.0, old_power),
+                        "last_output_limit_w": max(0.0, -old_power),
+                    },
+                )
         return ("group_control_active", targets)
 
     def __init__(
@@ -4019,6 +4078,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for device_id in members:
             await runtime.async_execute_device_command(stop, device_id=device_id)
         self._persist["group_control_last_targets"] = {}
+        self._persist.pop("group_control_target_changed_at", None)
         self._persist.pop("group_control_handover_pending", None)
 
     async def _execute_device_command(
@@ -4438,6 +4498,15 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         previous_targets = previous
                         member_results = dict(results)
                         accepted_at = dt_util.as_utc(self._clock.utc_now()).isoformat()
+                        if (
+                            set(previous_targets) != set(signed_targets)
+                            or any(
+                                not isinstance(previous_targets.get(device_id), Mapping)
+                                or previous_targets[device_id].get("power_w") != value
+                                for device_id, value in signed_targets.items()
+                            )
+                        ):
+                            self._persist["group_control_target_changed_at"] = accepted_at
                         self._persist["group_control_last_targets"] = {
                             device_id: {
                                 "direction": (
