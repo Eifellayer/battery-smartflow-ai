@@ -1,4 +1,5 @@
 """Exercise native and portal group options using the shared flow harness."""
+import json
 import unittest
 from types import SimpleNamespace
 from uuid import uuid4
@@ -26,6 +27,7 @@ class GroupWizardTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         namespace.update(
+            json=json,
             uuid4=uuid4,
             normalize_electrical_topology=normalize_electrical_topology,
             save_electrical_topology=save_electrical_topology,
