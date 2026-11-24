@@ -30,6 +30,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
 
   set panel(panel) {
     this._panel = panel;
+    if (this._hass) this._loadPortalTranslations();
     this._scheduleRender();
   }
 
@@ -54,7 +55,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
     this._optionsOpeningStepId = null;
     this._pointerActive = false;
     this._renderDeferred = false;
-    this._portalTranslationLanguage = null;
+    this._portalTranslationUrl = null;
     this._portalTranslations = null;
     this.shadowRoot.addEventListener("pointerdown", () => {
       this._pointerActive = true;
@@ -519,15 +520,16 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const language = String(this._hass?.locale?.language || "en")
       .toLowerCase()
       .split(/[-_]/)[0];
-    if (language === this._portalTranslationLanguage) return;
-    this._portalTranslationLanguage = language;
-    this._portalTranslations = null;
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = encodeURIComponent(this._panel?.config?.dashboard_version || "1.0.66");
-    fetch(`/battery_smartflow_ai/translations/${safeLanguage}.json?v=${version}`)
+    const version = this._panel?.config?.dashboard_version || "1.0.69";
+    const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
+    if (url === this._portalTranslationUrl) return;
+    this._portalTranslationUrl = url;
+    this._portalTranslations = null;
+    fetch(url)
       .then((response) => response.ok ? response.json() : {})
       .then((translations) => {
-        if (this._portalTranslationLanguage !== language) return;
+        if (this._portalTranslationUrl !== url) return;
         this._portalTranslations = translations;
         this._scheduleRender();
       })
