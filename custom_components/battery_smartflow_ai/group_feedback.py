@@ -38,16 +38,19 @@ def feedback_target(
     if error_w < 0.0:
         # A real export/import error in the wrong direction is protective.
         return min(prev, physical_goal), "measured_fast_reduction"
-    if pending:
-        return min(prev, physical_goal), "awaiting_actuator"
-    # With a settled actuator at startup or a large real load jump the
-    # instantaneous physical balance supplies a direct target. The ramp
-    # still scales with elapsed time; applying the time factor twice would
-    # make even a 190 W startup take minutes with delayed telemetry.
-    if error_w >= 300.0 or prev <= band:
+    if physical_goal < prev:
+        return physical_goal, "cancel_pending_overshoot"
+    # A large physical load gap may ramp toward its bounded target even
+    # while the actuator is catching up. A small gap must settle first.
+    # Unlike a repeatedly integrated grid error, the target cannot wind up.
+    if pending and physical_goal - prev < 300.0:
+        return prev, "awaiting_actuator"
+    if physical_goal - prev >= 300.0 or prev <= band:
         target = physical_goal
     else:
-        target = min(physical_goal, measured + error_w * min(1.0, max(0.05, gain)) * scale)
+        proportional = measured + error_w * min(1.0, max(0.05, gain)) * scale
+        approach_band = prev + max(0.0, physical_goal - prev - band * 0.5) * scale
+        target = min(physical_goal, max(proportional, approach_band))
     target = min(target, prev + max(0.0, max_step_up_w) * scale)
     return max(prev, target), "measured_increase"
 

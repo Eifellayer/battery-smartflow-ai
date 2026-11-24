@@ -1295,6 +1295,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if (
             objective == GROUP_OBJECTIVE_NEAR_ZERO
             and target_w < 0
+            and not str(command.reason).startswith("group_feedback_")
             and getattr(strategy_intent, "intent", None) in {
                 "cover_deficit", "peak_discharge", "arbitrage_discharge", "manual_discharge",
             }
