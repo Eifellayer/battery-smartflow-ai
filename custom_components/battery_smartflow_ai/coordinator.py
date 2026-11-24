@@ -1165,18 +1165,23 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             getattr(strategy_intent, "requested_mode", "") or ""
         ).lower()
         requested_power_value = _to_float(requested_power, None)
-        if (
-            target_w > 0
-            and requested_mode == "input"
-            and requested_power_value is not None
-        ):
-            target_w = abs(requested_power_value)
-        elif (
-            target_w < 0
-            and requested_mode == "output"
-            and requested_power_value is not None
-        ):
-            target_w = -abs(requested_power_value)
+        # Near-zero already has a closed-loop technical controller with
+        # deadband, adaptive ramp and fast load-drop handling. Dispatch must
+        # distribute that final command, not replace it with the economic
+        # strategy request (which can oscillate as the grid crosses zero).
+        if objective != GROUP_OBJECTIVE_NEAR_ZERO:
+            if (
+                target_w > 0
+                and requested_mode == "input"
+                and requested_power_value is not None
+            ):
+                target_w = abs(requested_power_value)
+            elif (
+                target_w < 0
+                and requested_mode == "output"
+                and requested_power_value is not None
+            ):
+                target_w = -abs(requested_power_value)
         if objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
             if not scope.get("price_entity"):
                 return ("group_ups_price_unavailable", None)
@@ -4267,17 +4272,25 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 or old_value * target_value < -0.5
                             ):
                                 increases.add(device_id)
-                            observed_direction, observed_w, _ = measured_flow(device_id)
+                            observed_direction, observed_w, observed_at = measured_flow(device_id)
                             target_direction = (
                                 "charge" if target_value > 0.5
                                 else "discharge" if target_value < -0.5
                                 else None
                             )
                             target_magnitude = abs(target_value)
+                            # A lagging same-direction measurement is not a
+                            # new handover: an increasing setpoint on this
+                            # device must not be interrupted by a zero command.
+                            # Genuine direction changes and actual target
+                            # reductions still require the existing barrier.
                             if observed_direction is not None and (
                                 observed_direction != target_direction
-                                or observed_w > target_magnitude
-                                + GROUP_HANDOVER_POWER_TOLERANCE_W
+                                or (
+                                    device_id not in increases
+                                    and observed_w > target_magnitude
+                                    + GROUP_HANDOVER_POWER_TOLERANCE_W
+                                )
                             ):
                                 reductions.add(device_id)
 
@@ -4419,10 +4432,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._persist["group_control_status"] = result.reason
                     else:
                         self._persist["group_control_members"] = list(target_commands)
+                        # Feed the actually accepted group total back to the
+                        # regulator; a profile/circuit cap or allocation may
+                        # have reduced the requested command.
+                        previous_targets = previous
+                        member_results = dict(results)
+                        accepted_at = dt_util.as_utc(self._clock.utc_now()).isoformat()
                         self._persist["group_control_last_targets"] = {
                             device_id: {
-                                "direction": direction,
+                                "direction": (
+                                    "charge" if signed_targets[device_id] > 0
+                                    else "discharge" if signed_targets[device_id] < 0
+                                    else "idle"
+                                ),
                                 "power_w": signed_targets[device_id],
+                                "accepted_at": (
+                                    accepted_at
+                                    if member_results[device_id].status is CommandExecutionStatus.APPLIED
+                                    or not isinstance(previous_targets.get(device_id), Mapping)
+                                    or previous_targets[device_id].get("power_w") != signed_targets[device_id]
+                                    else previous_targets[device_id].get("accepted_at") or accepted_at
+                                ),
                             }
                             for device_id in target_commands
                         }
@@ -4451,9 +4481,24 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             ),
                         )
                         self._persist["group_control_status"] = status
-                self._persist.update(
-                    confirmed_command_state_updates(command, result)
-                )
+                        # All member commands were applied or confirmed
+                        # unchanged. Use the allocated total, even when no
+                        # new transport write was needed this cycle.
+                        total_input = int(round(sum(max(0.0, value) for value in signed_targets.values())))
+                        total_output = int(round(sum(max(0.0, -value) for value in signed_targets.values())))
+                        self._persist.update({
+                            "last_set_mode": "input" if direction == "charge" else "output" if direction == "discharge" else command.ac_mode,
+                            "last_set_input_w": total_input,
+                            "last_set_output_w": total_output,
+                        })
+                        if result.input_written:
+                            self._persist["input_write_last_success_w"] = total_input
+                        if result.output_written:
+                            self._persist["output_write_last_success_w"] = total_output
+                if group_plan is None:
+                    self._persist.update(
+                        confirmed_command_state_updates(command, result)
+                    )
             else:
                 # V6 commands may only use the native per-system adapter. A
                 # disabled/unavailable native path or an unconverted V5 entry
@@ -11035,6 +11080,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             details["shadow_allocation_status"] = details[
                 "shadow_allocation"
             ]["status"]
+            details["shadow_allocation"]["dispatch_status"] = self._persist.get("group_control_status")
+            details["shadow_allocation"]["last_accepted_targets"] = self._persist.get("group_control_last_targets", {})
+            details["shadow_allocation"]["handover_pending"] = self._persist.get("group_control_handover_pending")
 
             if timing_enabled and cycle_started_monotonic is not None:
                 details.update(

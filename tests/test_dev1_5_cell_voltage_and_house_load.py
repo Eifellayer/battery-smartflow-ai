@@ -181,6 +181,19 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
             selected_limit_w=1200, reserve_soc_pct=20, maximum_soc_pct=95,
         ) == 1300
 
+        # The economic request must not undo the technical deadband/ramp.
+        intent = SimpleNamespace(requested_mode="output", requested_power_w=550, metadata={})
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=190), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 190
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=0), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 0
+
         options.pop(SETTING_MAX_DISCHARGE)
         circuit["max_power_w"] = 1400
         started = await coordinator._execute_device_command(
@@ -189,6 +202,9 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert started.reason == "group_control_active"
         assert {device for device, _ in writes} == set(devices)
         assert sum(command.output_limit_w for _, command in writes) == 1400
+        assert coordinator._persist["last_set_output_w"] == 1400
+        assert all(item["accepted_at"] == now.isoformat()
+                   for item in coordinator._persist["group_control_last_targets"].values())
         assert all(0 < command.output_limit_w <= devices[device] for device, command in writes)
 
         writes.clear()
