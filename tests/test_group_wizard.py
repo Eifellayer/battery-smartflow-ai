@@ -2,6 +2,7 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from test_native_beta2 import const, load_flow_namespace
@@ -46,16 +47,54 @@ class GroupWizardTests(unittest.IsolatedAsyncioTestCase):
             {"value": "solar", "label": "SolarFlow 800 Plus"},
         ]
 
-        async def forecast_options():
-            return []
-
-        self.flow._forecast_options = forecast_options
+        # Mock only the HA Energy boundary, never the options-flow helper.
+        self.flow.hass = SimpleNamespace()
+        self.forecast_provider = AsyncMock(return_value=[
+            {"value": "forecast-1", "label": "Forecast.Solar"}
+        ])
+        namespace["async_energy_forecast_sources"] = self.forecast_provider
 
     def test_options_flow_defines_its_own_forecast_options(self):
         """The PV source step calls this helper; the config flow's copy is not inherited."""
 
         flow_class = load_flow_namespace()["ZendureSmartFlowOptionsFlow"]
         self.assertIn("_forecast_options", vars(flow_class))
+
+    async def test_pv_form_uses_real_forecast_options_and_allows_no_circuits(self):
+        flow = self.flow
+        await flow.async_step_group_create({"name": "Home", "members": ["hyper", "solar"]})
+        menu = await flow.async_step_group_wizard_strategy({"control_enabled": True})
+        self.assertIn("topology_skip_to_sensors", menu["menu_options"])
+        form = await flow.async_step_topology_skip_to_sensors()
+        self.assertEqual(form["step_id"], "group_wizard_sensors")
+        # Configuring sensors without topology must not relax output checks.
+        self.assertEqual(len(flow._missing_group_outputs(flow._group_wizard_topology)), 2)
+        await flow.async_step_group_wizard_sensors({
+            "scope_name": "Home", "grid_mode": "signed",
+            "grid_power_entities": ["sensor.grid"],
+        })
+        form = await flow.async_step_group_wizard_pv_add()
+        self.assertEqual(form["step_id"], "group_wizard_pv_add")
+        self.forecast_provider.assert_awaited_once_with(flow.hass)
+        self.assertEqual(await flow._forecast_options(), self.forecast_provider.return_value)
+        await flow.async_step_group_wizard_pv_add({
+            "source_name": "PV", "source_mode": "components",
+            "power_entities": ["sensor.pv_1", "sensor.pv_2"],
+            "forecast_entry_ids": ["forecast-1"],
+        })
+        saved = await flow.async_step_group_wizard_save()
+        scope = next(iter(saved["data"][const.CONF_ENERGY_SCOPES]["scopes"].values()))
+        self.assertEqual(scope["pv_sources"][0]["forecast_entry_ids"], ["forecast-1"])
+        self.assertFalse(saved["data"][const.CONF_ELECTRICAL_TOPOLOGY]["circuits"])
+
+    async def test_ups_cannot_skip_circuits(self):
+        flow = self.flow
+        await flow.async_step_group_create({"name": "UPS", "members": ["hyper"]})
+        menu = await flow.async_step_group_wizard_strategy({
+            "control_enabled": True, "objective": battery_groups.GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE,
+        })
+        self.assertNotIn("topology_skip_to_sensors", menu["menu_options"])
+        self.assertIn("topology_continue_domains", menu["menu_options"])
 
     async def test_group_creation_preserves_pv_and_checks_both_outputs(self):
         flow = self.flow

@@ -342,6 +342,7 @@
           "topology_circuit_remove": "Stromkreis entfernen",
           "group_wizard_back_strategy": "Zurück zum Gruppenziel",
           "topology_continue_connections": "Weiter zu den Geräteausgängen",
+          "topology_skip_to_sensors": "Weiter ohne Stromkreise (Steuerung erst nach Zuordnung)",
           "topology_continue_domains": "Weiter zu den Lastbereichen"
         }
       },

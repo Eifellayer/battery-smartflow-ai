@@ -657,13 +657,13 @@ class ZendureNormalizerTests(unittest.IsolatedAsyncioTestCase):
             self.bootstrap,
             stale_after_seconds=10,
             supported_device_targets={
-                system_id: frozenset({"soc_pct", "pv_power_w"})
+                system_id: frozenset({"soc_pct", "pv_power_w", "ac_output_power_w"})
             },
         )
         normalizer.apply(
             report(
                 self.at,
-                {"properties": {"electricLevel": 55, "solarInputPower": 0}},
+                {"properties": {"electricLevel": 55, "solarInputPower": 0, "outputHomePower": 0}},
             )
         )
         later = normalizer.snapshot(
@@ -673,12 +673,30 @@ class ZendureNormalizerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(later.state.pv_power_w.validity, ValueValidity.VALID)
         # Safety-relevant values keep expiring by age.
         self.assertEqual(later.state.soc_pct.validity, ValueValidity.STALE)
+        self.assertEqual(later.state.ac_output_power_w.validity, ValueValidity.STALE)
+        normalizer.set_online(system_id, None)
+        self.assertEqual(normalizer.snapshot(
+            system_id, now=self.at + timedelta(hours=1)
+        ).state.pv_power_w.validity, ValueValidity.STALE)
         # A device which went offline still invalidates PV.
         normalizer.set_online(system_id, False)
         offline = normalizer.snapshot(
             system_id, now=self.at + timedelta(hours=1)
         )
         self.assertEqual(offline.state.pv_power_w.validity, ValueValidity.OFFLINE)
+        normalizer.set_online(system_id, True)
+        self.assertEqual(normalizer.snapshot(
+            system_id, now=self.at + timedelta(hours=1)
+        ).state.pv_power_w.validity, ValueValidity.STALE)
+        recovered = normalizer.apply(report(
+            self.at + timedelta(hours=1), {"properties": {"solarInputPower": 0}}
+        ))
+        self.assertTrue(recovered.state.pv_power_w.valid)
+        invalid = normalizer.apply(report(
+            self.at + timedelta(hours=1, seconds=1),
+            {"properties": {"solarInputPower": -1}},
+        ))
+        self.assertEqual(invalid.state.pv_power_w.validity, ValueValidity.INVALID)
 
     async def test_hyper_cloud_display_values_bridge_grouped_reports(self):
         """Legacy Cloud groups must not flash unavailable between reports."""

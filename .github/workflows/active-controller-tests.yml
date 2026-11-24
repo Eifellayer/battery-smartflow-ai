@@ -25,6 +25,8 @@ jobs:
           tests/test_native_source_fusion.py
           tests/test_zendure_hems_activity.py
           tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+          tests/test_native_read_source.py
       - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
       - name: Vergleiche Fehler mit dem Basiscommit
         run: |

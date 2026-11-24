@@ -1884,6 +1884,8 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         if draft is not None and draft.get("objective") != GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
             if config["circuits"]:
                 menu.append("topology_continue_connections")
+            else:
+                menu.append("topology_skip_to_sensors")
         else:
             menu.append("topology_continue_domains")
         return self.async_show_menu(step_id="topology_circuits", menu_options=menu)
@@ -1977,6 +1979,19 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             for item in config["connections"]
         ]
         return {"circuits": circuits, "load_domains": domains, "connections": connections}
+
+    async def async_step_topology_skip_to_sensors(self, user_input=None):
+        """Configure measurements before circuits; runtime topology gates stay in force."""
+        config = self._electrical_topology_config()
+        draft = getattr(self, "_group_wizard_draft", None)
+        if (
+            draft is None
+            or draft.get("objective") == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE
+            or config["circuits"]
+        ):
+            return await self.async_step_topology_circuits()
+        self._group_wizard_topology = save_electrical_topology(config)
+        return await self.async_step_group_wizard_sensors()
 
     async def async_step_topology_continue_domains(self, user_input=None):
         return await self.async_step_topology_domains()
