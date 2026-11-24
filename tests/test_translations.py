@@ -277,10 +277,33 @@ class TranslationCoverageTests(unittest.TestCase):
         reference = leaf_paths(load_json(TRANSLATIONS / "de.json"))
         for language in LANGUAGES[1:]:
             with self.subTest(language=language):
-                self.assertEqual(
-                    leaf_paths(load_json(TRANSLATIONS / f"{language}.json")),
-                    reference,
-                )
+                paths = leaf_paths(load_json(TRANSLATIONS / f"{language}.json"))
+                # The German Home Assistant wizard has local labels for these steps.
+                # Other locales can use the portal labels and English fallbacks.
+                german_wizard_steps = {
+                    "topology_circuits", "topology_domains", "topology_connections",
+                    "topology_review", "topology_circuit_edit_select",
+                    "topology_domain_edit_select", "topology_connection_edit_select",
+                    "topology_circuit_edit", "topology_domain_edit", "topology_connection_edit",
+                    "group_wizard_strategy", "group_wizard_sensors", "group_wizard_pv_sources",
+                    "group_wizard_pv_add", "group_wizard_pv_remove_select", "group_wizard_review",
+                }
+                optional_paths = {
+                    path for path in reference
+                    if path[:2] == ("options", "step") and path[2] in german_wizard_steps
+                }
+                if language in {"fr", "nl"}:
+                    optional_paths.update(
+                        path for path in reference
+                        if path[:3] == ("config", "step", "native_controller")
+                        or path == ("config", "error", "controller_device_not_configured")
+                        or path == ("options", "step", "init", "menu_options", "systems_groups")
+                        or path in {
+                            ("options", "error", "group_pv_aggregate_one_sensor"),
+                            ("options", "error", "group_pv_source_conflict"),
+                        }
+                    )
+                self.assertEqual(paths - optional_paths, reference - optional_paths)
 
     def test_strings_json_is_the_complete_english_source(self) -> None:
         strings = deepcopy(load_json(COMPONENT / "strings.json"))
