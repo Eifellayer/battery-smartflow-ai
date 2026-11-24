@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Sequence
@@ -382,6 +383,12 @@ def _to_float(v: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _public_group_device_id(device_id: str) -> str:
+    return "ZD_DEVICE_" + hashlib.sha256(
+        f"bsfai:DEVICE:{device_id}".encode()
+    ).hexdigest()[:12]
+
+
 def _native_battery_power_totals(states) -> tuple[float, float] | None:
     """Return complete native charge/discharge totals across main systems."""
 
@@ -517,7 +524,6 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> dict[str, Any]:
         """Build a per-group proposal from current regulation, without writes."""
 
-        import hashlib
         from collections.abc import Sequence
 
         from .battery_groups import (
@@ -793,13 +799,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             balancing_policy=selected_group.get("balancing_policy", "energy_weighted"),
         )
         result_data = result.as_dict()
-        public_ids = {
-            item["device_id"]: "ZD_DEVICE_"
-            + hashlib.sha256(
-                f"bsfai:DEVICE:{item['device_id']}".encode()
-            ).hexdigest()[:12]
-            for item in snapshots
-        }
+        public_ids = {device_id: _public_group_device_id(device_id) for device_id in members}
         result_data["group_name"] = str(selected_group.get("name") or "")
         result_data["group_size"] = len(members)
         result_data["control_enabled"] = selected_group.get("control_enabled") is True
@@ -822,12 +822,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             item["device_id"] = public_ids.get(item["device_id"])
         missing_members = set(members).difference(snapshot_by_id)
         for device_id in sorted(missing_members):
-            public_id = "ZD_DEVICE_" + hashlib.sha256(
-                f"bsfai:DEVICE:{device_id}".encode()
-            ).hexdigest()[:12]
             result_data["devices"].append(
                 {
-                    "device_id": public_id,
+                    "device_id": public_ids[device_id],
                     "name": None,
                     "proposed_power_w": 0.0,
                     "effective_limit_w": 0.0,
@@ -838,6 +835,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result_data["status"] = "incomplete_inventory"
         if len(members) < 2 and result_data["status"] == "complete":
             result_data["status"] = "single_device_group"
+        if result_data["control_enabled"]:
+            result_data["dispatch_status"] = self._persist.get("group_control_status")
+            result_data["last_accepted_targets"] = {
+                public_ids[device_id]: target
+                for device_id, target in self._persist.get(
+                    "group_control_last_targets", {}
+                ).items()
+                if device_id in public_ids
+            }
+            pending = self._persist.get("group_control_handover_pending")
+            if isinstance(pending, Mapping) and pending.get("group_id") == selected_group_id:
+                result_data["handover_pending"] = {
+                    "group_id": selected_group_id,
+                    "devices": {
+                        public_ids[device_id]: target
+                        for device_id, target in pending.get("devices", {}).items()
+                        if device_id in public_ids
+                    },
+                }
+            else:
+                result_data["handover_pending"] = None
         return result_data
 
     def _stable_group_lead_device_id(
@@ -4148,6 +4166,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if group_plan is None:
                     self._persist.pop("group_control_handover_pending", None)
+                    self._persist.pop("group_control_status", None)
+                    self._persist.pop("group_control_last_targets", None)
+                    self._persist.pop("group_control_target_changed_at", None)
                     previous_members = self._persist.get("group_control_members", ())
                     selected_id = getattr(native_runtime, "selected_device_id", None)
                     if isinstance(previous_members, Sequence) and not isinstance(
@@ -4450,7 +4471,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             result = CommandExecutionResult(
                                 status=failed_result.status,
                                 reason=(
-                                    f"group_handover_stop_failed:{failed_id}:"
+                                    f"group_handover_stop_failed:{_public_group_device_id(failed_id)}:"
                                     f"{failed_result.reason}"
                                 ),
                                 error=failed_result.error,
@@ -4529,7 +4550,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         result = CommandExecutionResult(
                             status=failed_result.status,
                             reason=(
-                                f"group_member_command_failed:{failed_id}:"
+                                f"group_member_command_failed:{_public_group_device_id(failed_id)}:"
                                 f"{failed_result.reason}"
                             ),
                             error=failed_result.error,
@@ -11207,9 +11228,6 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             details["shadow_allocation_status"] = details[
                 "shadow_allocation"
             ]["status"]
-            details["shadow_allocation"]["dispatch_status"] = self._persist.get("group_control_status")
-            details["shadow_allocation"]["last_accepted_targets"] = self._persist.get("group_control_last_targets", {})
-            details["shadow_allocation"]["handover_pending"] = self._persist.get("group_control_handover_pending")
             quality = getattr(self, "_group_regulation_quality", None)
             if quality is None:
                 quality = self._group_regulation_quality = RegulationQuality()
@@ -11224,6 +11242,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 limited=regulation_power_result.profile_limited,
             )
             details["shadow_allocation"]["feedback_active"] = bool(metadata.get("group_feedback_active"))
+            details["shadow_allocation"]["feedback_sample_available"] = group_feedback is not None
             details["shadow_allocation"]["feedback_measured_ac_w"] = metadata.get("measured_ac_w")
 
             if timing_enabled and cycle_started_monotonic is not None:

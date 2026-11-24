@@ -250,6 +250,15 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert {device for device, _ in writes} == set(devices)
         assert all(command.input_limit_w == command.output_limit_w == 0 for _, command in writes)
 
+        preview = coordinator._shadow_group_allocation(
+            strategy_intent=SimpleNamespace(requested_mode="input"),
+            charge_power_w=1400, discharge_power_w=0, soc_min=20, soc_max=95,
+        )
+        public_ids = {item["device_id"] for item in preview["devices"]}
+        assert preview["dispatch_status"] == "group_control_handover_waiting_for_zero"
+        assert set(preview["handover_pending"]["devices"]) == public_ids
+        assert public_ids.isdisjoint(devices)
+
         now += timedelta(seconds=2)
         states.update({device: SimpleNamespace(
             ac_input_power_w=MeasuredValue.available(0, observed_at=now),
@@ -263,6 +272,13 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert {device for device, _ in writes} == set(devices)
         assert sum(command.input_limit_w for _, command in writes) == 1400
         assert all(0 < command.input_limit_w <= devices[device] for device, command in writes)
+
+        preview = coordinator._shadow_group_allocation(
+            strategy_intent=SimpleNamespace(requested_mode="input"),
+            charge_power_w=1400, discharge_power_w=0, soc_min=20, soc_max=95,
+        )
+        assert set(preview["last_accepted_targets"]) == public_ids
+        assert preview["handover_pending"] is None
 
     asyncio.run(run())
 
