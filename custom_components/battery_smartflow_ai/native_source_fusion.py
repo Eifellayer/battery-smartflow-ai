@@ -9,6 +9,7 @@ from typing import Any
 
 from .core.models import (
     MeasuredValue,
+    ValueValidity,
     NeutralDeviceState,
     NeutralPackState,
     ReportedDeviceSetpoints,
@@ -16,7 +17,10 @@ from .core.models import (
 )
 from .hardware.zendure.cloud import ZendureCloudBootstrap
 from .hardware.zendure.cloud_mqtt import CloudMqttMessage
-from .hardware.zendure.hems_activity import HemsActivityDiagnostic
+from .hardware.zendure.hems_activity import (
+    HemsActivityDiagnostic,
+    HemsActivityTracker,
+)
 from .hardware.zendure.normalizer import (
     MAIN_PROPERTY_MAPPINGS,
     PACK_PROPERTY_MAPPINGS,
@@ -70,8 +74,15 @@ class NativeSourceFusion:
         preferred_transport: ZendureTransport | None = None,
         preferred_transports: Mapping[str, ZendureTransport] | None = None,
     ) -> None:
+        self._hems_activity = {
+            item.candidate.candidate_id: HemsActivityTracker()
+            for item in bootstrap.devices
+        }
         self._normalizers = {
-            transport: ZendureCloudNormalizer(bootstrap) for transport in _TRANSPORTS
+            transport: ZendureCloudNormalizer(
+                bootstrap, hems_activity=self._hems_activity
+            )
+            for transport in _TRANSPORTS
         }
         for item in bootstrap.devices:
             system_id = item.candidate.candidate_id
@@ -202,7 +213,7 @@ class NativeSourceFusion:
         self, system_id: str, *, now: datetime | None = None
     ) -> NormalizationResult:
         results = {
-            transport: normalizer.snapshot(system_id, now=now)
+            transport: normalizer.snapshot(system_id, now=now, infer_hems_activity=False)
             for transport, normalizer in self._normalizers.items()
         }
         states = {transport: result.state for transport, result in results.items()}
@@ -230,9 +241,6 @@ class NativeSourceFusion:
                 conflict_tolerance=_SAFETY_TOLERANCES.get(target),
             )
             trace[name] = selected
-            previous = self._selection.get(system_id, {}).get(name)
-            if previous is None or previous.transport != selected.transport:
-                self._selection_changed_at.setdefault(system_id, {})[name] = current
             return selected.measurement
 
         scalar_names = (
@@ -269,6 +277,28 @@ class NativeSourceFusion:
             )
             for name in scalar_names
         }
+        direct_hems = selected_values["hems_active"]
+        activity = self._hems_activity[system_id].measurement(now=current)
+        # Infer inactivity only if no status was reported. A recent activity
+        # message still blocks writes when the reported status is inactive.
+        if trace["hems_active"].status is not ReadSourceStatus.CONFLICT and (
+            direct_hems.validity in {ValueValidity.NEVER_RECEIVED, ValueValidity.MISSING}
+            or (
+                activity.valid and activity.value
+                and direct_hems.valid and not direct_hems.value
+            )
+        ):
+            selected_values["hems_active"] = activity
+            trace["hems_active"] = SelectedMeasurement(
+                measurement=activity,
+                transport=None,
+                status=(
+                    ReadSourceStatus.FALLBACK
+                    if activity.valid else ReadSourceStatus.UNAVAILABLE
+                ),
+                reason="hems_activity_monitoring",
+                alternatives=(),
+            )
         local_online = self._fresh_local_mqtt_online(system_id, states, current)
         if (
             self._preferred_transports.get(system_id)
@@ -289,14 +319,6 @@ class NativeSourceFusion:
                 ),
             )
             selected_values["online"] = local_online
-            previous_selection = self._selection.get(system_id, {}).get("online")
-            if (
-                previous_selection is None
-                or previous_selection.transport is not ZendureTransport.LOCAL_MQTT
-            ):
-                self._selection_changed_at.setdefault(system_id, {})[
-                    "online"
-                ] = current
         setpoints = ReportedDeviceSetpoints(
             **{
                 item.name: select(
@@ -361,6 +383,12 @@ class NativeSourceFusion:
             },
             **selected_values,
         )
+        previous_trace = self._selection.get(system_id, {})
+        changed_at = self._selection_changed_at.setdefault(system_id, {})
+        for name, selected in trace.items():
+            previous = previous_trace.get(name)
+            if previous is None or previous.transport != selected.transport:
+                changed_at[name] = current
         self._selection[system_id] = trace
         return NormalizationResult(
             state,
@@ -552,10 +580,7 @@ class NativeSourceFusion:
     def set_hems_monitoring(
         self, system_id: str, available: bool, *, observed_at: datetime
     ) -> None:
-        for source in (ZendureTransport.CLOUD_MQTT, ZendureTransport.LOCAL_MQTT):
-            self._normalizers[source].set_hems_monitoring(
-                system_id, available, observed_at=observed_at
-            )
+        self._hems_activity[system_id].set_monitoring(available, observed_at=observed_at)
 
     def hems_diagnostics(
         self,
@@ -563,11 +588,7 @@ class NativeSourceFusion:
         *,
         now: datetime,
     ) -> HemsActivityDiagnostic:
-        values = [
-            self._normalizers[source].hems_diagnostics(system_id, now=now)
-            for source in (ZendureTransport.CLOUD_MQTT, ZendureTransport.LOCAL_MQTT)
-        ]
-        return next((value for value in values if value.monitoring), values[0])
+        return self._hems_activity[system_id].diagnostics(now=now)
 
     def source_diagnostics(
         self,

@@ -43,7 +43,8 @@ class HemsActivityTracker:
     def observe_energy(self, *, observed_at: datetime) -> None:
         """Treat properties/energy solely as positive HEMS activity evidence."""
 
-        self._last_activity_at = observed_at
+        if self._last_activity_at is None or observed_at > self._last_activity_at:
+            self._last_activity_at = observed_at
 
     def measurement(self, *, now: datetime) -> MeasuredValue[bool]:
         if self._last_activity_at is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 from base64 import b64encode
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from support import bootstrap
@@ -189,6 +190,42 @@ class NativeSourceFusionTests(unittest.IsolatedAsyncioTestCase):
         ).state
         self.assertEqual(state.hems_active.validity, ValueValidity.INVALID)
         self.assertIsNone(state.hems_active.value)
+
+    def test_hems_activity_is_shared_across_transports_for_one_device(self):
+        system_id = "cloud_mqtt:device-1"
+        self.fusion.set_hems_monitoring(system_id, True, observed_at=self.now)
+        later = self.now + timedelta(seconds=61)
+        quiet = self.fusion.snapshot(system_id, now=later).state
+        self.assertTrue(quiet.hems_active.valid)
+        self.assertFalse(quiet.hems_active.value)
+
+        energy = replace(
+            report(later, {}), topic="/product-1/device-1/properties/energy"
+        )
+        active = self.fusion.apply(energy).state
+        self.assertTrue(active.hems_active.valid)
+        self.assertTrue(active.hems_active.value)
+        older_local = replace(energy, received_at=self.now, transport="local_mqtt")
+        self.assertTrue(self.fusion.apply(older_local, now=later).state.hems_active.value)
+
+    def test_inferred_hems_silence_does_not_contradict_fresh_active_status(self):
+        system_id = "cloud_mqtt:device-1"
+        self.fusion.set_hems_monitoring(system_id, True, observed_at=self.now)
+        later = self.now + timedelta(seconds=61)
+        active = self.fusion.apply(
+            report(later, {"hemsState": 1}, transport="zensdk")
+        ).state
+        self.assertTrue(active.hems_active.valid)
+        self.assertTrue(active.hems_active.value)
+
+    def test_inferred_hems_silence_cannot_clear_invalid_device_status(self):
+        system_id = "cloud_mqtt:device-1"
+        self.fusion.set_hems_monitoring(system_id, True, observed_at=self.now)
+        later = self.now + timedelta(seconds=61)
+        result = self.fusion.apply(
+            report(later, {"hemsState": 255}, transport="zensdk")
+        ).state
+        self.assertEqual(result.hems_active.validity, ValueValidity.INVALID)
 
     def test_cloud_error_snapshot_prevents_false_protection_conflict(self):
         """Match the SF2400AC Cloud plus ZenSDK startup sequence."""

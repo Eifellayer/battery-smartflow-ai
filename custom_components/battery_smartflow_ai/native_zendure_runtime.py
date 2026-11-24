@@ -236,11 +236,10 @@ class NativeZendureRuntime:
         self._available_energy_soc_at: dict[str, datetime] = {}
         self._available_energy_pending_soc: dict[str, float] = {}
         self._available_energy_pending_count: dict[str, int] = {}
-        # A Local MQTT selection starts from the proven Cloud path.  Cloud may
-        # temporarily retain read/write authority until the physical Legacy
-        # device has supplied fresh local telemetry once.  After that first
-        # confirmed handover, Cloud can never silently regain authority.
-        self._local_handover_complete = False
+        # Cloud can bootstrap each Local MQTT device until that device first
+        # reports fresh local telemetry. A different group member can still
+        # require the shared Cloud connection.
+        self._local_handover_complete_devices: set[str] = set()
 
     @property
     def configured(self) -> bool:
@@ -1208,11 +1207,11 @@ class NativeZendureRuntime:
                 "local_handover": {
                     "required": self._selected_local_transport()
                     is ZendureTransport.LOCAL_MQTT,
-                    "complete": self._local_handover_complete,
+                    "complete": self._selected_device in self._local_handover_complete_devices,
                     "cloud_bootstrap_active": (
                         self._selected_local_transport()
                         is ZendureTransport.LOCAL_MQTT
-                        and not self._local_handover_complete
+                        and self._selected_device not in self._local_handover_complete_devices
                         and self._active_control_transport()
                         is ZendureTransport.CLOUD_MQTT
                     ),
@@ -2681,7 +2680,7 @@ class NativeZendureRuntime:
         ):
             return configured
         if (
-            not self._local_handover_complete
+            device.system_id not in self._local_handover_complete_devices
             and self._control_transport_ready(
                 ZendureTransport.CLOUD_MQTT, device_id=device.system_id
             )
@@ -2695,21 +2694,27 @@ class NativeZendureRuntime:
         return configured
 
     async def _advance_local_handover(self) -> None:
-        """Commit Local ownership once and retire the account Cloud reader."""
+        """Commit Local ownership per device and keep Cloud for members that need it."""
 
-        if self._local_handover_complete or self._selected_device is None:
-            return
-        device = self._inventory.devices.get(self._selected_device)
+        configured = self._device_transport_preferences(tuple(
+            device_id for device_id in self._inventory.devices
+            if device_id == self._selected_device
+            or self._setup_status(device_id, supported=True) == "configured"
+        ))
+        local_devices = {
+            device_id for device_id, transport in configured.items()
+            if transport is ZendureTransport.LOCAL_MQTT
+        }
+        for device_id in local_devices - self._local_handover_complete_devices:
+            if self._control_transport_ready(
+                ZendureTransport.LOCAL_MQTT, device_id=device_id
+            ):
+                self._local_handover_complete_devices.add(device_id)
         if (
-            device is None
-            or self._selected_control_transport(device).transport
-            is not ZendureTransport.LOCAL_MQTT
-            or not self._control_transport_ready(ZendureTransport.LOCAL_MQTT)
-        ):
-            return
-        self._local_handover_complete = True
-        if (
-            self._transport is not None
+            local_devices
+            and local_devices <= self._local_handover_complete_devices
+            and ZendureTransport.CLOUD_MQTT not in configured.values()
+            and self._transport is not None
             and self._transport.state is ConnectionState.CONNECTED
         ):
             await self._transport.async_stop()
@@ -2796,7 +2801,7 @@ class NativeZendureRuntime:
         if (
             configured is ZendureTransport.LOCAL_MQTT
             and active is ZendureTransport.CLOUD_MQTT
-            and not self._local_handover_complete
+            and self._selected_device not in self._local_handover_complete_devices
         ):
             return "native_local_handover_cloud_active"
         transport = active

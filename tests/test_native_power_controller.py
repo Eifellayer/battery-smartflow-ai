@@ -322,6 +322,9 @@ class NativePowerControllerTests(unittest.IsolatedAsyncioTestCase):
             devices=(*target._inventory.devices.values(), second_device)
         )
         target._states[second_id] = state()
+        target._transport.device_states[second_id] = SimpleNamespace(
+            last_message_at=NOW, property_updated_at={"electricLevel": NOW},
+        )
         target._device_setups[second_id] = {
             "setup_status": "configured",
             "transport": ZendureTransport.CLOUD_MQTT.value,
@@ -525,7 +528,7 @@ class NativePowerControllerTests(unittest.IsolatedAsyncioTestCase):
 
         await target._advance_local_handover()
 
-        self.assertTrue(target._local_handover_complete)
+        self.assertIn(DEVICE, target._local_handover_complete_devices)
         self.assertTrue(target._transport.stopped)
         self.assertEqual(
             target.sensor_data()["native_zendure_control"],
@@ -538,12 +541,45 @@ class NativePowerControllerTests(unittest.IsolatedAsyncioTestCase):
 
         await target._advance_local_handover()
 
-        self.assertFalse(target._local_handover_complete)
+        self.assertNotIn(DEVICE, target._local_handover_complete_devices)
         self.assertFalse(target._transport.stopped)
         self.assertEqual(
             target.sensor_data()["native_zendure_control"],
             "native_local_handover_cloud_active",
         )
+
+    async def test_hyper_handover_keeps_cloud_for_solarflow_800_plus(self):
+        target = legacy_runtime()
+        secondary_id = "cloud_mqtt:sf800-plus"
+        identity = NativeDeviceIdentity(
+            ZendureTransport.CLOUD_MQTT, device_id="sf800-plus",
+            product_id="product-b", product_model="SolarFlow 800 Plus",
+        )
+        target._inventory = DeviceInventory(devices=(
+            target._inventory.devices[DEVICE],
+            MainDevice(secondary_id, "SolarFlow 800 Plus", native_identities=(identity,)),
+        ))
+        target._device_setups[secondary_id] = {
+            "transport": "cloud_mqtt", "setup_status": "configured",
+        }
+        target._transport.device_states[secondary_id] = target._transport.device_states[DEVICE]
+        target._states[secondary_id] = state()
+        target._hems_gate.update(
+            secondary_id, measured(False), capability=VerificationLevel.VERIFIED,
+        )
+
+        await target._advance_local_handover()
+
+        self.assertIn(DEVICE, target._local_handover_complete_devices)
+        self.assertFalse(target._transport.stopped)
+        for device_id in (DEVICE, secondary_id):
+            result = await target.async_execute_device_command(
+                DeviceCommand("output", output_limit_w=450, should_write_output=True),
+                device_id=device_id,
+            )
+            self.assertEqual(result.status, CommandExecutionStatus.APPLIED)
+        self.assertEqual(len(target._local_transport.commands), 1)
+        self.assertEqual(len(target._transport.commands), 1)
 
     async def test_explicit_cloud_selection_reads_and_writes_only_cloud(self):
         target = runtime(control_transport=ZendureTransport.CLOUD_MQTT.value)
@@ -583,7 +619,7 @@ class NativePowerControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_local_mqtt_never_falls_back(self):
         target = legacy_runtime()
-        target._local_handover_complete = True
+        target._local_handover_complete_devices.add(DEVICE)
         target._local_transport.device_states[DEVICE].last_message_at = (
             NOW - timedelta(minutes=5)
         )

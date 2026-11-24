@@ -310,6 +310,7 @@ class ZendureCloudNormalizer:
         stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
         supported_device_targets: Mapping[str, frozenset[str]] | None = None,
         supported_pack_targets: Mapping[str, frozenset[str]] | None = None,
+        hems_activity: Mapping[str, HemsActivityTracker] | None = None,
     ) -> None:
         if stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be positive")
@@ -338,7 +339,7 @@ class ZendureCloudNormalizer:
         self._last_message: dict[str, datetime | None] = {
             candidate_id: None for candidate_id in self._models
         }
-        self._hems_activity = {
+        self._hems_activity = hems_activity if hems_activity is not None else {
             candidate_id: HemsActivityTracker() for candidate_id in self._models
         }
         self._observed_transport: dict[str, ZendureTransport] = {
@@ -524,6 +525,7 @@ class ZendureCloudNormalizer:
         system_id: str,
         *,
         now: datetime | None = None,
+        infer_hems_activity: bool = True,
     ) -> NormalizationResult:
         if system_id not in self._models:
             raise KeyError(system_id)
@@ -540,7 +542,7 @@ class ZendureCloudNormalizer:
         direct_hems = device_value("hems_active")
         hems_active = (
             direct_hems
-            if direct_hems.validity
+            if not infer_hems_activity or direct_hems.validity
             not in {ValueValidity.NEVER_RECEIVED, ValueValidity.MISSING}
             else self._hems_activity[system_id].measurement(now=current)
         )

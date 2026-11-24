@@ -4130,6 +4130,8 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> CommandExecutionResult:
         """Execute one neutral command through the configured backend."""
 
+        from .battery_groups import GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE
+
         try:
             native_runtime = getattr(self, "native_zendure", None)
             if native_runtime is not None and native_runtime.control_enabled:
@@ -4205,13 +4207,22 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         for device_id, item in target_commands.items()
                     }
                     device_states = native_runtime.fresh_device_state_map()
+                    group_objective = next(iter(target_commands.values())).metadata.get(
+                        "group_objective"
+                    )
 
                     def measured_flow(device_id: str) -> tuple[str | None, float, Any]:
                         state = device_states.get(device_id)
                         if state is None:
                             return None, 0.0, None
-                        charge = state.charge_power_w
-                        discharge = state.discharge_power_w
+                        # Grid targets change AC flow. The battery can still
+                        # charge from PV after the grid input has reached zero.
+                        if group_objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+                            charge = state.charge_power_w
+                            discharge = state.discharge_power_w
+                        else:
+                            charge = state.ac_input_power_w
+                            discharge = state.ac_output_power_w
                         charge_w = (
                             max(0.0, float(charge.value))
                             if charge.valid and charge.value is not None
@@ -4222,17 +4233,17 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             if discharge.valid and discharge.value is not None
                             else 0.0
                         )
-                        if charge_w >= discharge_w and charge_w > 0.5:
+                        tolerance = GROUP_HANDOVER_POWER_TOLERANCE_W
+                        if charge_w >= discharge_w and charge_w > tolerance:
                             return "charge", charge_w, charge.observed_at
-                        if discharge_w > 0.5:
+                        if discharge_w > tolerance:
                             return "discharge", discharge_w, discharge.observed_at
-                        observed_at = max(
-                            (
-                                value.observed_at
-                                for value in (charge, discharge)
-                                if value.valid and value.observed_at is not None
-                            ),
-                            default=None,
+                        # A single zero sample cannot confirm both directions.
+                        observed_at = (
+                            min(charge.observed_at, discharge.observed_at)
+                            if charge.valid and charge.observed_at is not None
+                            and discharge.valid and discharge.observed_at is not None
+                            else None
                         )
                         return None, 0.0, observed_at
 
