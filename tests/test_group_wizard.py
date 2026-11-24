@@ -51,6 +51,12 @@ class GroupWizardTests(unittest.IsolatedAsyncioTestCase):
 
         self.flow._forecast_options = forecast_options
 
+    def test_options_flow_defines_its_own_forecast_options(self):
+        """The PV source step calls this helper; the config flow's copy is not inherited."""
+
+        flow_class = load_flow_namespace()["ZendureSmartFlowOptionsFlow"]
+        self.assertIn("_forecast_options", vars(flow_class))
+
     async def test_group_creation_preserves_pv_and_checks_both_outputs(self):
         flow = self.flow
         menu = await flow.async_step_init()

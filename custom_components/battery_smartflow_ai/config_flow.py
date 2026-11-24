@@ -1549,6 +1549,15 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
 
         return merged_options
 
+
+    async def _forecast_options(self) -> list[dict[str, str]]:
+        """List the same solar-forecast providers exposed to HA Energy."""
+
+        try:
+            return await async_energy_forecast_sources(self.hass)
+        except Exception:
+            return []
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         self._working_options = {}
         return self.async_show_menu(

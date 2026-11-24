@@ -649,6 +649,37 @@ class ZendureNormalizerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(offline.state.soc_pct.validity, ValueValidity.OFFLINE)
         self.assertFalse(offline.state.online.value)
 
+    async def test_unchanged_pv_power_stays_valid_without_new_report(self):
+        """Night-time 0 W PV is reported once; age alone must not invalidate it."""
+
+        system_id = "cloud_mqtt:device-1"
+        normalizer = ZendureCloudNormalizer(
+            self.bootstrap,
+            stale_after_seconds=10,
+            supported_device_targets={
+                system_id: frozenset({"soc_pct", "pv_power_w"})
+            },
+        )
+        normalizer.apply(
+            report(
+                self.at,
+                {"properties": {"electricLevel": 55, "solarInputPower": 0}},
+            )
+        )
+        later = normalizer.snapshot(
+            system_id, now=self.at + timedelta(hours=1)
+        )
+        self.assertEqual(later.state.pv_power_w.value, 0.0)
+        self.assertEqual(later.state.pv_power_w.validity, ValueValidity.VALID)
+        # Safety-relevant values keep expiring by age.
+        self.assertEqual(later.state.soc_pct.validity, ValueValidity.STALE)
+        # A device which went offline still invalidates PV.
+        normalizer.set_online(system_id, False)
+        offline = normalizer.snapshot(
+            system_id, now=self.at + timedelta(hours=1)
+        )
+        self.assertEqual(offline.state.pv_power_w.validity, ValueValidity.OFFLINE)
+
     async def test_hyper_cloud_display_values_bridge_grouped_reports(self):
         """Legacy Cloud groups must not flash unavailable between reports."""
 
