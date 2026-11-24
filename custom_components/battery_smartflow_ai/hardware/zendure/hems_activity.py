@@ -47,32 +47,19 @@ class HemsActivityTracker:
             self._last_activity_at = observed_at
 
     def measurement(self, *, now: datetime) -> MeasuredValue[bool]:
-        if self._last_activity_at is not None:
-            age = max(0.0, (now - self._last_activity_at).total_seconds())
-            if not self._monitoring:
-                return MeasuredValue.absent(
-                    ValueValidity.STALE,
-                    observed_at=self._last_activity_at,
-                )
-            if age <= self._timeout:
-                return MeasuredValue.available(
-                    True,
-                    observed_at=self._last_activity_at,
-                )
-            return MeasuredValue.available(
-                False,
-                observed_at=self._last_activity_at,
-            )
-
-        if not self._monitoring or self._monitoring_started_at is None:
-            return MeasuredValue.absent(ValueValidity.NEVER_RECEIVED)
-        quiet = max(0.0, (now - self._monitoring_started_at).total_seconds())
-        if quiet <= self._timeout:
+        last = self._last_activity_at
+        started = self._monitoring_started_at
+        if not self._monitoring or started is None:
             return MeasuredValue.absent(
-                ValueValidity.NEVER_RECEIVED,
-                observed_at=self._monitoring_started_at,
+                ValueValidity.STALE if last is not None else ValueValidity.NEVER_RECEIVED,
+                observed_at=last,
             )
-        return MeasuredValue.available(False, observed_at=self._monitoring_started_at)
+        if last is not None and 0 <= (now - last).total_seconds() <= self._timeout:
+            return MeasuredValue.available(True, observed_at=last)
+        quiet_since = max(started, last) if last is not None else started
+        if (now - quiet_since).total_seconds() <= self._timeout:
+            return MeasuredValue.absent(ValueValidity.NEVER_RECEIVED, observed_at=quiet_since)
+        return MeasuredValue.available(False, observed_at=now)
 
     def diagnostics(self, *, now: datetime) -> HemsActivityDiagnostic:
         anchor = self._last_activity_at or self._monitoring_started_at

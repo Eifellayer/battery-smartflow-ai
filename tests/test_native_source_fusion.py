@@ -218,6 +218,21 @@ class NativeSourceFusionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(active.hems_active.valid)
         self.assertTrue(active.hems_active.value)
 
+    def test_healthy_quiet_monitoring_renews_only_a_stale_inactive_hems_report(self):
+        system_id = "cloud_mqtt:device-1"
+        later = self.now + timedelta(seconds=181)
+        for raw, expected in ((0, ValueValidity.VALID), (1, ValueValidity.STALE)):
+            with self.subTest(raw=raw):
+                self.fusion.set_hems_monitoring(system_id, True, observed_at=self.now)
+                self.fusion.apply(report(self.now, {"hemsState": raw}))
+                state = self.fusion.snapshot(system_id, now=later).state
+                self.assertEqual(state.hems_active.validity, expected)
+                if state.hems_active.valid:
+                    self.assertFalse(state.hems_active.value)
+                self.fusion.set_hems_monitoring(system_id, False, observed_at=later)
+                disconnected = self.fusion.snapshot(system_id, now=later).state
+                self.assertFalse(disconnected.hems_active.valid)
+
     def test_inferred_hems_silence_cannot_clear_invalid_device_status(self):
         system_id = "cloud_mqtt:device-1"
         self.fusion.set_hems_monitoring(system_id, True, observed_at=self.now)
