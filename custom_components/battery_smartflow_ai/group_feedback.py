@@ -40,8 +40,14 @@ def feedback_target(
         return min(prev, physical_goal), "measured_fast_reduction"
     if pending:
         return min(prev, physical_goal), "awaiting_actuator"
-    factor = 1.0 if error_w >= 300.0 or prev <= band else min(1.0, max(0.05, gain))
-    target = min(physical_goal, measured + error_w * factor * scale)
+    # With a settled actuator at startup or a large real load jump the
+    # instantaneous physical balance supplies a direct target. The ramp
+    # still scales with elapsed time; applying the time factor twice would
+    # make even a 190 W startup take minutes with delayed telemetry.
+    if error_w >= 300.0 or prev <= band:
+        target = physical_goal
+    else:
+        target = min(physical_goal, measured + error_w * min(1.0, max(0.05, gain)) * scale)
     target = min(target, prev + max(0.0, max_step_up_w) * scale)
     return max(prev, target), "measured_increase"
 

@@ -24,6 +24,7 @@ jobs:
           tests/test_native_power_controller.py
           tests/test_native_source_fusion.py
           tests/test_zendure_hems_activity.py
+          tests/test_group_feedback.py
           tests/test_group_wizard.py
           tests/test_zendure_normalizer.py
           tests/test_native_read_source.py

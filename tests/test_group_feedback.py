@@ -69,3 +69,23 @@ def test_quality_counts_only_outside_deadband():
     assert result["state"] == "hunting"
     assert result["sign_changes"] == 3
     assert q.update(41, None, deadband_w=30)["state"] == "unavailable"
+
+
+def test_delayed_ramped_load_step_and_release():
+    for delay in (3, 7):
+        pending = deque([190.0] * delay)
+        command = actual = 190.0
+        before_drop = []
+        after_drop = []
+        for i in range(150):
+            load = 1650.0 if 10 <= i < 90 else 190.0
+            desired = pending.popleft()
+            actual += max(-550.0, min(550.0, desired - actual))
+            command = target(command, actual, load - actual, 3)
+            pending.append(command)
+            if 80 <= i < 90:
+                before_drop.append(abs(load - actual))
+            if i >= 125:
+                after_drop.append(abs(load - actual))
+        assert max(before_drop) <= 30
+        assert max(after_drop) <= 30
