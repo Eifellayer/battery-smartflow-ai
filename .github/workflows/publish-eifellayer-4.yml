@@ -1,0 +1,32 @@
+name: Publish 6.0.10-eifellayer.4
+on:
+  push:
+    branches: ['release/6.0.10-eifellayer.4']
+    paths: ['.github/workflows/publish-eifellayer-4.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-eifellayer-4
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/release/6.0.10-eifellayer.4'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Verify successful regression run on exact source
+        run: |
+          test "$(gh api repos/$GH_REPO/actions/runs/45450697678 --jq .head_sha)" = "2b507ea1a914079aee48c498d785f8bb6aa2f006"
+          test "$(gh api repos/$GH_REPO/actions/runs/45450697678 --jq .conclusion)" = "success"
+      - name: Publish regular release
+        run: |
+          if gh release view 6.0.10-eifellayer.4 >/dev/null 2>&1; then
+            echo "Release already exists; leaving it unchanged."
+            exit 0
+          fi
+          gh release create 6.0.10-eifellayer.4 --target 2b507ea1a914079aee48c498d785f8bb6aa2f006 \
+            --title "Battery SmartFlow AI 6.0.10-eifellayer.4" --latest \
+            --notes "PV-Telemetrie bei unverändertem Wert und Online-Status korrigiert; nach Offline-Ereignis neue PV-Meldung erforderlich. Gruppen-Assistent erlaubt Sensor- und PV-Konfiguration ohne Stromkreise, bei unveränderten Schutzbedingungen für die aktive Steuerung. Forecast-Options-Regressionstest ohne Methodenstub. Gezielte Tests und Vergleich mit Basiscommit erfolgreich (Actions 45450697678). Hardware-Liveprüfung und HACS-Repository-Validierung noch offen."
