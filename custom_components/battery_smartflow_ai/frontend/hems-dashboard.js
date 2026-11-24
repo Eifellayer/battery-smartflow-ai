@@ -1305,14 +1305,14 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const messages = this._regulationMessages();
     const needsAttention = warnings.length > 0 || messages.some((message) => message.blocked);
     if (!systems.length && !messages.length) return "";
-    const details = `${warnings.length ? `<ul>${warnings.map((warning) =>
-      `<li>${this._escape(warning)}</li>`).join("")}</ul>` : ""}
-      ${messages.map(({ title, summary, values, nextAction, priceUnit }) => `<article class="regulation-message">
+    const warningList = warnings.length ? `<ul>${warnings.map((warning) =>
+      `<li>${this._escape(warning)}</li>`).join("")}</ul>` : "";
+    const details = `${messages.map(({ title, summary, values, nextAction, priceUnit }) => `<article class="regulation-message">
         <strong>${this._escape(title)}</strong><p>${this._escape(summary)}</p>
         ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}
         ${this._operationPlan(nextAction, priceUnit)}
       </article>`).join("")}`;
-    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div><div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div>${details}</section>`;
+    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div>${warningList}${details}<div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div></section>`;
   }
 
   _batteryGroupMemberCard(member, entities) {
@@ -3422,4 +3422,10 @@ class BatterySmartFlowDashboard extends HTMLElement {
   }
 }
 
-customElements.define("battery-smartflow-ai-hems-dashboard", BatterySmartFlowDashboard);
+const panelVersion = new URL(import.meta.url).searchParams.get("v");
+const panelName = /^[0-9a-f]{12}$/.test(panelVersion || "")
+  ? `battery-smartflow-ai-hems-dashboard-${panelVersion}`
+  : "battery-smartflow-ai-hems-dashboard";
+if (!customElements.get(panelName)) {
+  customElements.define(panelName, BatterySmartFlowDashboard);
+}

@@ -552,7 +552,7 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=_PANEL_PATH,
-        webcomponent_name=_PANEL_NAME,
+        webcomponent_name=f"{_PANEL_NAME}-{panel_module_version}",
         sidebar_title="BSFAI Portal",
         sidebar_icon="mdi:solar-power-variant",
         module_url=f"{_PANEL_URL}?v={panel_module_version}",
