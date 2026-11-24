@@ -55,6 +55,7 @@ from .const import (
     CONF_ADDITIONAL_BATTERY_DISCHARGE_ENTITY,
     CONF_BATTERY_GROUPS,
     CONF_ENERGY_SCOPES,
+    CONF_NATIVE_ZENDURE_DEVICE_SETUPS,
     CONF_NATIVE_ZENDURE_SELECTED_DEVICE,
     CONF_DEVICE_PROFILE,
     CONF_PROFILE_OVERRIDES,
@@ -240,6 +241,7 @@ from .device_command import DeviceCommandBuilder, clamp_number_power_request
 from .command_execution_state import confirmed_command_state_updates
 from .adapters.home_assistant.clock import HomeAssistantClock
 from .adapters.home_assistant.state_store import HomeAssistantStateStore
+from .native_device_setup import native_device_profile_key
 from .v5_migration import migrate_persisted_v47_state
 from .command_effectiveness import (
     CommandEffectivenessConfig,
@@ -1498,8 +1500,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             price_input_profile(self.price_currency).step
         )
 
+        active_profile_key = native_device_profile_key(
+            entry.options.get(CONF_NATIVE_ZENDURE_DEVICE_SETUPS),
+            entry.options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE),
+        )
         self.device_profile_key = (
-            entry.options.get(CONF_DEVICE_PROFILE)
+            active_profile_key
+            or entry.options.get(CONF_DEVICE_PROFILE)
             or entry.data.get(CONF_DEVICE_PROFILE)
             or DEFAULT_DEVICE_PROFILE
         )

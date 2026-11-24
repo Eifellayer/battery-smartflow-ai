@@ -148,6 +148,7 @@ from .native_config_ui import (
 )
 from .native_device_setup import (
     SETUP_COMPLETE,
+    native_device_profile_key,
     reconcile_device_setups,
     save_device_setup,
     setup_is_complete,
@@ -610,6 +611,9 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._native_options[
                             CONF_NATIVE_ZENDURE_SELECTED_DEVICE
                         ] = active_device_id
+                    active_profile_key = native_device_profile_key(
+                        self._native_setup_map, active_device_id
+                    )
                     # This is an integration-wide permission, so a value
                     # submitted while configuring any device must be retained.
                     self._native_options[
@@ -681,9 +685,9 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         ] = self._native_setup_map
                         entry = self._migration_entry
                         self._user_input["connection_type"] = "native"
-                        self._user_input.setdefault(
-                            CONF_DEVICE_PROFILE, profile.profile_key
-                        )
+                        if active_profile_key is not None:
+                            self._user_input[CONF_DEVICE_PROFILE] = active_profile_key
+                            self._native_options.pop(CONF_DEVICE_PROFILE, None)
                         return self.async_update_and_abort(
                             entry,
                             data=self._user_input,
@@ -714,7 +718,8 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             else {}
                         )
                         self._user_input["connection_type"] = "native"
-                        self._user_input[CONF_DEVICE_PROFILE] = profile.profile_key
+                        if active_profile_key is not None:
+                            self._user_input[CONF_DEVICE_PROFILE] = active_profile_key
                         return await self.async_step_native_external()
                     next_id = next(
                         item.candidate.candidate_id for item in devices
@@ -3112,6 +3117,9 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 options[CONF_NATIVE_ZENDURE_APP_TOKEN] = self._native_token
                 options[CONF_NATIVE_ZENDURE_DEVICE_SETUPS] = setup_map
                 options[CONF_NATIVE_ZENDURE_SELECTED_DEVICE] = selected_id
+                profile_key = native_device_profile_key(setup_map, selected_id)
+                if profile_key is not None:
+                    options[CONF_DEVICE_PROFILE] = profile_key
                 options[CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT] = transport.value
                 options[CONF_NATIVE_ZENDURE_CONTROL_ENABLED] = bool(
                     user_input.get(
