@@ -1,0 +1,45 @@
+name: Test and publish 6.0.10-eifellayer.7
+on:
+  push:
+    branches: ['release/6.0.10-eifellayer.7']
+    paths: ['.github/workflows/publish-eifellayer-7.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ce10e9c3cd492b98eb8b9be35d1244d3a21e9bd2
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest voluptuous
+      - run: >-
+          python -m pytest -q
+          tests/test_group_feedback.py
+          tests/test_dev1_5_cell_voltage_and_house_load.py
+          tests/test_technical_regulation_core.py
+          tests/test_native_power_controller.py
+          tests/test_native_beta2.py
+          tests/test_native_source_fusion.py
+          tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+          tests/test_command_execution_state.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: |
+          if gh release view 6.0.10-eifellayer.7 >/dev/null 2>&1; then exit 0; fi
+          gh release create 6.0.10-eifellayer.7 --target ce10e9c3cd492b98eb8b9be35d1244d3a21e9bd2 --latest \
+            --title "Battery SmartFlow AI 6.0.10-eifellayer.7" \
+            --notes "Eigenständige messwertbasierte Gruppenregelung für near-zero bei vollständiger aktueller AC-Telemetrie; zeitabhängige Erhöhungen, Gain 0.35 bei kleinen Abweichungen, schnelle Absenkungen, Qualitätsdiagnose. Bestehende Schutz- und Richtungswechselregeln unverändert. Bei fehlender Messwertfrische Rückfall auf .6-Regler. Tests mit verzögertem Aktor; Live-Abnahme offen."
