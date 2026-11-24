@@ -1,4 +1,4 @@
-name: Publish 6.0.10-eifellayer.3 prerelease
+name: Publish 6.0.10-eifellayer.3 release
 on:
   push:
     branches: ['release/6.0.10-eifellayer.3']
@@ -45,14 +45,16 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Publish tested source as prerelease
+      - name: Publish tested source as regular release
         run: |
           if gh release view 6.0.10-eifellayer.3 >/dev/null 2>&1; then
-            echo "Release already exists; leaving it unchanged."
+            actual="$(gh api "repos/$GH_REPO/git/ref/tags/6.0.10-eifellayer.3" --jq .object.sha)"
+            test "$actual" = efcede2920c53024e4f08dc35948d434ee3248bb
+            gh release edit 6.0.10-eifellayer.3 --prerelease=false --latest
             exit 0
           fi
           gh release create 6.0.10-eifellayer.3 \
             --target efcede2920c53024e4f08dc35948d434ee3248bb \
             --title "Battery SmartFlow AI 6.0.10-eifellayer.3" \
-            --prerelease \
-            --notes "Vorabversion: PV-Werte bleiben bei unverändertem Wert (z. B. nachts 0 W) gültig, solange das Gerät online ist. Fehlende Prognose-Auswahl im Gruppen-Assistenten ergänzt. Enthält die Korrekturen aus PR #1 und PR #2. Gezielte Regressionstests und JavaScript-Syntaxprüfung bestanden. HACS-Repository-Validierung und vollständiger Hardware-Test sind noch offen. Vor Einsatz an der Anlage Konfiguration und Schutzgrenzen prüfen."
+            --latest \
+            --notes "Testrelease: PV-Werte bleiben bei unverändertem Wert (z. B. nachts 0 W) gültig, solange das Gerät online ist. Fehlende Prognose-Auswahl im Gruppen-Assistenten ergänzt. Enthält die Korrekturen aus PR #1 und PR #2. Gezielte Regressionstests und JavaScript-Syntaxprüfung bestanden. HACS-Repository-Validierung und vollständiger Hardware-Test sind noch offen. Vor Einsatz an der Anlage Konfiguration und Schutzgrenzen prüfen."
