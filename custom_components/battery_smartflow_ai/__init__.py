@@ -295,6 +295,7 @@ async def _async_setup_entry_once(hass: HomeAssistant, entry: ConfigEntry) -> bo
     if cv is None:
         coordinator.native_zendure = _DisabledNativeRuntime()
     else:
+        from .battery_groups import enabled_group_members
         from .native_zendure_runtime import NativeZendureRuntime
 
         migration = entry.data.get("v5_migration", {})
@@ -310,6 +311,10 @@ async def _async_setup_entry_once(hass: HomeAssistant, entry: ConfigEntry) -> bo
             selected_device=entry.options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE),
             migration_bound_device=migration_bound_device,
             device_setups=entry.options.get(CONF_NATIVE_ZENDURE_DEVICE_SETUPS),
+            group_members=enabled_group_members(
+                entry.options.get(CONF_BATTERY_GROUPS),
+                entry.options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE),
+            ),
             control_enabled=bool(
                 entry.options.get(CONF_NATIVE_ZENDURE_CONTROL_ENABLED, False)
             ),

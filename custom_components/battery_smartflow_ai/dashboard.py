@@ -453,9 +453,10 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
     # the check-and-register sequence so each instance cannot register the
     # same GET route before the other one marks it as registered.
     frontend_dir = Path(__file__).parent / "frontend"
-    panel_module_version = hashlib.sha256(
-        (frontend_dir / "hems-dashboard.js").read_bytes()
-    ).hexdigest()[:12]
+    panel_module = await hass.async_add_executor_job(
+        (frontend_dir / "hems-dashboard.js").read_bytes
+    )
+    panel_module_version = hashlib.sha256(panel_module).hexdigest()[:12]
 
     registration_lock = hass.data.setdefault(_STATIC_PATH_LOCK_KEY, asyncio.Lock())
     async with registration_lock:

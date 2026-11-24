@@ -142,6 +142,7 @@ class NativeZendureRuntime:
         notify: Callable[[], None],
         migration_bound_device: str | None = None,
         device_setups: Mapping[str, Any] | None = None,
+        group_members: Sequence[str] = (),
         control_enabled: bool = False,
         always_smart_mode_1: bool = True,
         control_transport: str | None = None,
@@ -153,6 +154,7 @@ class NativeZendureRuntime:
         self._hass = hass
         self._app_token = app_token
         self._selected_device = selected_device
+        self._group_members = frozenset(group_members)
         self._migration_bound_device = migration_bound_device
         raw_setups = (
             device_setups.get("devices", {})
@@ -337,8 +339,8 @@ class NativeZendureRuntime:
             if device is None:
                 continue
             control_state = (
-                self._hardware_control_state()
-                if system_id == self._selected_device
+                self._hardware_control_state(system_id)
+                if system_id == self._selected_device or system_id in self._group_members
                 else device.control_state
             )
             runtime_status.append(
@@ -902,8 +904,8 @@ class NativeZendureRuntime:
                 zensdk_success_source=connection_source,
                 zensdk_ip_address=ip_address,
             )
-            if system_id == self._selected_device:
-                item = with_control_state(item, self._hardware_control_state())
+            if system_id == self._selected_device or system_id in self._group_members:
+                item = with_control_state(item, self._hardware_control_state(system_id))
             displayed.append(item)
         return tuple(displayed)
 
@@ -1157,13 +1159,24 @@ class NativeZendureRuntime:
             self._available_energy_pending_soc[system_id] = decision.pending_soc
         self._available_energy_pending_count[system_id] = decision.pending_count
 
-    def _hardware_control_state(self) -> DeviceControlState:
-        """Describe readiness separately from the current strategy decision."""
+    def _hardware_control_state(self, system_id: str) -> DeviceControlState:
+        """Describe control readiness for one configured system."""
 
-        if not self._control_enabled or self._selected_device is None:
+        if (
+            not self._control_enabled
+            or self._selected_device is None
+            or (
+                system_id != self._selected_device
+                and (
+                    system_id not in self._group_members
+                    or system_id == self._migration_bound_device
+                    or self._setup_status(system_id, supported=True) != "configured"
+                )
+            )
+        ):
             return DeviceControlState.OBSERVATION
-        device = self._inventory.devices.get(self._selected_device)
-        state = self._states.get(self._selected_device)
+        device = self._inventory.devices.get(system_id)
+        state = self._states.get(system_id)
         if device is None:
             return DeviceControlState.OBSERVATION
         if device.control_state in {
@@ -1178,9 +1191,12 @@ class NativeZendureRuntime:
             or not device.online
         ):
             return DeviceControlState.OFFLINE
-        if self._selected_control_transport(device).transport is None:
+        transport = self._effective_control_transport(device).transport
+        if transport is None:
             return DeviceControlState.UNSUPPORTED
-        if not self._transport_router.snapshot.synchronized:
+        if self._status != STATUS_OBSERVING or not self._control_transport_ready(
+            transport, device_id=system_id
+        ):
             return DeviceControlState.ELIGIBLE
         return (
             DeviceControlState.ACTIVE
