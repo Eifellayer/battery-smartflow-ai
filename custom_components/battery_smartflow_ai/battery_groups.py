@@ -260,6 +260,64 @@ def reconcile_group_config(value: Any = None) -> dict[str, Any]:
     return {"version": GROUPS_SCHEMA_VERSION, "groups": groups}
 
 
+def enabled_group_members(group_config: Any, selected_id: str) -> tuple[str, ...]:
+    """Return members of the enabled group that owns the active controller."""
+
+    try:
+        groups = reconcile_group_config(group_config)["groups"]
+    except (TypeError, ValueError):
+        return ()
+    return next(
+        (
+            tuple(group["members"])
+            for group in groups.values()
+            if group["control_enabled"] and selected_id in group["members"]
+        ),
+        (),
+    )
+
+
+def group_power_ceiling(options: Mapping[str, Any], profile_field: str) -> float | None:
+    """Sum verified hardware limits for a configured native group."""
+
+    from .const import (
+        CONF_BATTERY_GROUPS,
+        CONF_NATIVE_ZENDURE_CONTROL_ENABLED,
+        CONF_NATIVE_ZENDURE_DEVICE_SETUPS,
+        CONF_NATIVE_ZENDURE_SELECTED_DEVICE,
+    )
+    from .device_profiles import get_profile_config
+    from .native_device_setup import native_device_profile_key
+
+    selected_id = options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE)
+    if not options.get(CONF_NATIVE_ZENDURE_CONTROL_ENABLED) or not isinstance(
+        selected_id, str
+    ):
+        return None
+    members = enabled_group_members(options.get(CONF_BATTERY_GROUPS), selected_id)
+    if not members:
+        return None
+
+    setup = options.get(CONF_NATIVE_ZENDURE_DEVICE_SETUPS)
+    total = 0.0
+    for member in members:
+        profile_key = native_device_profile_key(setup, member)
+        if profile_key is None:
+            return None
+        total += float(get_profile_config(profile_key)[profile_field])
+    return total
+
+
+def limit_group_power(options: Mapping[str, Any], setting: str, power_w: float) -> float:
+    """Apply a saved group-wide user limit where one has been configured."""
+
+    try:
+        limit_w = float(options[setting])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return power_w
+    return min(power_w, max(0.0, limit_w)) if math.isfinite(limit_w) else 0.0
+
+
 def save_group(
     config: Mapping[str, Any],
     *,

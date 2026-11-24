@@ -41,6 +41,7 @@ from .const import (
     SETTING_FORECAST_BASE_LOAD,
     DEFAULT_FORECAST_BASE_LOAD,
 )
+from .battery_groups import group_power_ceiling
 from .device_profiles import get_profile_config
 from .factor_display import (
     discount_pct_to_valley_factor,
@@ -243,9 +244,13 @@ def _default_for_key(key: str, price_currency=None) -> float:
 
 
 def _power_limit_maximum(coordinator, key: str) -> float:
-    """Return the fixed hardware ceiling for a configurable power limit."""
+    """Return the active group's hardware ceiling or the controller's own limit."""
 
     profile_field = POWER_LIMIT_PROFILE_FIELDS[key]
+    entry = getattr(coordinator, "entry", None)
+    group_maximum = group_power_ceiling(getattr(entry, "options", {}), profile_field)
+    if group_maximum is not None:
+        return group_maximum
     profile_key = getattr(coordinator, "device_profile_key", "SF2400AC")
     profile = get_profile_config(profile_key)
     fallback = (

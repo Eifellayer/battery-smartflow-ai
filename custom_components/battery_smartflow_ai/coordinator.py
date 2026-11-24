@@ -241,6 +241,7 @@ from .device_command import DeviceCommandBuilder, clamp_number_power_request
 from .command_execution_state import confirmed_command_state_updates
 from .adapters.home_assistant.clock import HomeAssistantClock
 from .adapters.home_assistant.state_store import HomeAssistantStateStore
+from .battery_groups import enabled_group_members, limit_group_power
 from .native_device_setup import native_device_profile_key
 from .v5_migration import migrate_persisted_v47_state
 from .command_effectiveness import (
@@ -924,58 +925,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         return selected_lead
 
-    def _native_group_max_output_w(
+    def _native_group_power_limit_w(
         self,
         runtime: Any,
         *,
-        selected_max_output_w: float,
+        setting: str,
+        selected_limit_w: float,
         reserve_soc_pct: float,
         maximum_soc_pct: float,
     ) -> float | None:
-        """Return the aggregate output capability for the active group.
-
-        ``None`` keeps the established single-device limit. In a productive
-        multi-device group the regulation target represents the group's total
-        power, so its ceiling is the sum of member capabilities rather than
-        the selected lead device's profile limit.
-        """
-
-        from .battery_groups import reconcile_group_config
-        from .const import CONF_BATTERY_GROUPS
+        """Apply live member limits and the saved group-wide power limit."""
 
         selected_id = getattr(runtime, "selected_device_id", None)
-        if (
-            not bool(getattr(runtime, "control_enabled", False))
-            or not isinstance(selected_id, str)
-            or not selected_id
+        if not getattr(runtime, "control_enabled", False) or not isinstance(
+            selected_id, str
         ):
             return None
-        try:
-            groups = reconcile_group_config(
-                self.entry.options.get(CONF_BATTERY_GROUPS)
-            )["groups"]
-        except (TypeError, ValueError):
-            return None
-
-        selected_group = next(
-            (
-                group
-                for group in groups.values()
-                if selected_id in group.get("members", ())
-                and group.get("control_enabled") is True
-            ),
-            None,
+        members = enabled_group_members(
+            self.entry.options.get(CONF_BATTERY_GROUPS), selected_id
         )
-        if not isinstance(selected_group, Mapping):
+        if len(members) < 2:
             return None
-        members = selected_group.get("members", ())
-        if (
-            not isinstance(members, Sequence)
-            or isinstance(members, (str, bytes))
-            or len(members) < 2
-        ):
-            return None
-
         try:
             snapshots = runtime.shadow_allocation_snapshots(
                 reserve_soc_pct=reserve_soc_pct,
@@ -983,110 +953,23 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except (AttributeError, TypeError, ValueError):
             return None
-        snapshot_by_id = {
-            item.get("device_id"): item
-            for item in snapshots
+        limits = {
+            item.get("device_id"): item for item in snapshots
             if isinstance(item, Mapping)
         }
-        if any(device_id not in snapshot_by_id for device_id in members):
+        if any(member not in limits for member in members):
             return None
 
-        total_limit_w = 0.0
-        for device_id in members:
-            member_limit_w = _to_float(
-                snapshot_by_id[device_id].get("max_discharge_w"), 0.0
-            )
-            if member_limit_w is None or not math.isfinite(member_limit_w):
+        field = "max_charge_w" if setting == SETTING_MAX_CHARGE else "max_discharge_w"
+        total = 0.0
+        for member in members:
+            limit = _to_float(limits[member].get(field), 0.0)
+            if limit is None or not math.isfinite(limit):
                 return None
-            if device_id == selected_id:
-                member_limit_w = min(
-                    member_limit_w,
-                    max(0.0, float(selected_max_output_w)),
-                )
-            total_limit_w += max(0.0, member_limit_w)
-        return total_limit_w
-
-    def _native_group_max_input_w(
-        self,
-        runtime: Any,
-        *,
-        selected_max_input_w: float,
-        reserve_soc_pct: float,
-        maximum_soc_pct: float,
-    ) -> float | None:
-        """Return the aggregate AC input capability for the active group.
-
-        Group input targets are aggregate values. Keep the selected device's
-        configured/runtime cap, then add each other member's own AC input
-        capability. The group allocator still applies every member and circuit
-        limit before issuing device commands.
-        """
-
-        from .battery_groups import reconcile_group_config
-        from .const import CONF_BATTERY_GROUPS
-
-        selected_id = getattr(runtime, "selected_device_id", None)
-        if (
-            not bool(getattr(runtime, "control_enabled", False))
-            or not isinstance(selected_id, str)
-            or not selected_id
-        ):
-            return None
-        try:
-            groups = reconcile_group_config(
-                self.entry.options.get(CONF_BATTERY_GROUPS)
-            )["groups"]
-        except (TypeError, ValueError):
-            return None
-
-        selected_group = next(
-            (
-                group
-                for group in groups.values()
-                if selected_id in group.get("members", ())
-                and group.get("control_enabled") is True
-            ),
-            None,
-        )
-        if not isinstance(selected_group, Mapping):
-            return None
-        members = selected_group.get("members", ())
-        if (
-            not isinstance(members, Sequence)
-            or isinstance(members, (str, bytes))
-            or len(members) < 2
-        ):
-            return None
-
-        try:
-            snapshots = runtime.shadow_allocation_snapshots(
-                reserve_soc_pct=reserve_soc_pct,
-                maximum_soc_pct=maximum_soc_pct,
-            )
-        except (AttributeError, TypeError, ValueError):
-            return None
-        snapshot_by_id = {
-            item.get("device_id"): item
-            for item in snapshots
-            if isinstance(item, Mapping)
-        }
-        if any(device_id not in snapshot_by_id for device_id in members):
-            return None
-
-        total_limit_w = 0.0
-        for device_id in members:
-            member_limit_w = _to_float(
-                snapshot_by_id[device_id].get("max_charge_w"), 0.0
-            )
-            if member_limit_w is None or not math.isfinite(member_limit_w):
-                return None
-            if device_id == selected_id:
-                member_limit_w = min(
-                    member_limit_w,
-                    max(0.0, float(selected_max_input_w)),
-                )
-            total_limit_w += max(0.0, member_limit_w)
-        return total_limit_w
+            if member == selected_id:
+                limit = min(limit, selected_limit_w)
+            total += max(0.0, limit)
+        return limit_group_power(self.entry.options, setting, total)
 
     def _productive_group_targets(
         self,
@@ -1360,6 +1243,12 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else "group_pv_storage_grid_unavailable"
                 )
                 return (reason, None)
+        if target_w > 0:
+            target_w = limit_group_power(self.entry.options, SETTING_MAX_CHARGE, target_w)
+        elif target_w < 0:
+            target_w = -limit_group_power(
+                self.entry.options, SETTING_MAX_DISCHARGE, -target_w
+            )
         device_circuits = (
             offgrid_circuits_by_device
             if objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE and target_w < 0
@@ -7522,6 +7411,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 )
 
+            group_max_output_w = self._native_group_power_limit_w(
+                native_runtime,
+                setting=SETTING_MAX_DISCHARGE,
+                selected_limit_w=float(max_discharge),
+                reserve_soc_pct=float(soc_min),
+                maximum_soc_pct=float(soc_max),
+            )
             ctx = RuntimeSnapshot(
                 now=now,
                 soc=soc,
@@ -7530,7 +7426,10 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 emergency_soc=float(emergency_soc),
                 emergency_charge_w=float(emergency_w),
                 max_charge_w=float(max_charge),
-                max_discharge_w=float(max_discharge),
+                max_discharge_w=(
+                    group_max_output_w if group_max_output_w is not None
+                    else float(max_discharge)
+                ),
                 grid_import_w=float(grid_import),
                 grid_export_w=float(grid_export),
                 pv_w=float(pv_w),
@@ -8876,9 +8775,10 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
-            group_max_input_w = self._native_group_max_input_w(
+            group_max_input_w = self._native_group_power_limit_w(
                 native_runtime,
-                selected_max_input_w=float(max_ac_input),
+                setting=SETTING_MAX_CHARGE,
+                selected_limit_w=float(max_ac_input),
                 reserve_soc_pct=float(soc_min),
                 maximum_soc_pct=float(soc_max),
             )
@@ -8919,16 +8819,16 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if native_pv_passthrough_selected
                 else soc_min_discharge_taper_max_output_w
             )
-            group_max_output_w = (
-                None
-                if native_pv_passthrough_selected
-                else self._native_group_max_output_w(
+            if native_pv_passthrough_selected:
+                group_max_output_w = None
+            elif soc_min_discharge_taper_active:
+                group_max_output_w = self._native_group_power_limit_w(
                     native_runtime,
-                    selected_max_output_w=selected_output_limit_w,
+                    setting=SETTING_MAX_DISCHARGE,
+                    selected_limit_w=selected_output_limit_w,
                     reserve_soc_pct=float(soc_min),
                     maximum_soc_pct=float(soc_max),
                 )
-            )
             regulation_max_output_w = (
                 group_max_output_w
                 if group_max_output_w is not None

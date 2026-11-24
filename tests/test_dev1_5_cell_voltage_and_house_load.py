@@ -57,6 +57,7 @@ from custom_components.battery_smartflow_ai.const import (
     CONF_CELL_VOLTAGE_PROTECTION_ENABLED,
     CONF_ELECTRICAL_TOPOLOGY,
     CONF_EXPERT_MODE_ENABLED,
+    SETTING_MAX_DISCHARGE,
 )
 from custom_components.battery_smartflow_ai.core.models import (
     CommandExecutionResult,
@@ -161,6 +162,27 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
             ],
         )
 
+        options = coordinator.entry.options
+        circuit = options[CONF_ELECTRICAL_TOPOLOGY]["circuits"]["shared"]
+        circuit["max_power_w"] = 2000
+        options[SETTING_MAX_DISCHARGE] = 2000
+        demand = DeviceCommand("output", output_limit_w=2500)
+        status, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure
+        )
+        assert status == "group_control_active"
+        assert {device: cmd.output_limit_w for device, cmd in targets.items()} == devices
+
+        options[SETTING_MAX_DISCHARGE] = 1300
+        _, targets = coordinator._productive_group_targets(demand, coordinator.native_zendure)
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 1300
+        assert coordinator._native_group_power_limit_w(
+            coordinator.native_zendure, setting=SETTING_MAX_DISCHARGE,
+            selected_limit_w=1200, reserve_soc_pct=20, maximum_soc_pct=95,
+        ) == 1300
+
+        options.pop(SETTING_MAX_DISCHARGE)
+        circuit["max_power_w"] = 1400
         started = await coordinator._execute_device_command(
             DeviceCommand("output", output_limit_w=1700)
         )
