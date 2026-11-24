@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ce10e9c3cd492b98eb8b9be35d1244d3a21e9bd2
+          ref: dc1aa961868673b8947b8a4247fdd8701922a018
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -40,6 +40,6 @@ jobs:
     steps:
       - run: |
           if gh release view 6.0.10-eifellayer.7 >/dev/null 2>&1; then exit 0; fi
-          gh release create 6.0.10-eifellayer.7 --target ce10e9c3cd492b98eb8b9be35d1244d3a21e9bd2 --latest \
+          gh release create 6.0.10-eifellayer.7 --target dc1aa961868673b8947b8a4247fdd8701922a018 --latest \
             --title "Battery SmartFlow AI 6.0.10-eifellayer.7" \
             --notes "Eigenständige messwertbasierte Gruppenregelung für near-zero bei vollständiger aktueller AC-Telemetrie; zeitabhängige Erhöhungen, Gain 0.35 bei kleinen Abweichungen, schnelle Absenkungen, Qualitätsdiagnose. Bestehende Schutz- und Richtungswechselregeln unverändert. Bei fehlender Messwertfrische Rückfall auf .6-Regler. Tests mit verzögertem Aktor; Live-Abnahme offen."
