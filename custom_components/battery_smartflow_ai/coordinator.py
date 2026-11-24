@@ -286,6 +286,7 @@ from .market_price import (
     LegacyImportForecastAdapter,
     MarketPrice,
     MarketPriceDirection,
+    MarketPricePoint,
     MarketPriceSourceAdapter,
     NumericPriceNormalizer,
     daily_price_statistics,
@@ -387,6 +388,33 @@ def _public_group_device_id(device_id: str) -> str:
     return "ZD_DEVICE_" + hashlib.sha256(
         f"bsfai:DEVICE:{device_id}".encode()
     ).hexdigest()[:12]
+
+
+def _next_discharge_price_window(
+    points: Sequence[MarketPricePoint], now: datetime, *thresholds: float | None
+) -> dict[str, Any]:
+    """Find a future price opportunity for display only."""
+
+    usable_thresholds = [
+        value for value in thresholds if value is not None and math.isfinite(value)
+    ]
+    future_points = [point for point in points if point.start > now]
+    if not usable_thresholds or not future_points:
+        return {"status": "no_price_forecast"}
+    threshold = min(usable_thresholds)
+    first = min(
+        (point for point in future_points if point.price >= threshold),
+        key=lambda point: point.start,
+        default=None,
+    )
+    if first is None:
+        return {"status": "no_matching_price"}
+    return {
+        "status": "price_opportunity",
+        "start": first.start.isoformat(),
+        "end": first.end.isoformat(),
+        "price": first.price,
+    }
 
 
 def _group_member_power_limits(
@@ -11324,6 +11352,37 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if self._persist.get("power_state") == "passthrough"
                 else "none"
             )
+            season_mode = details["season_mode"]
+            charge_plan = {"status": "no_charge_window"}
+            charge_start = learned_charge_plan.optimal_charge_start
+            charge_end = learned_charge_plan.optimal_charge_end
+            if (
+                learned_planning_enabled
+                and season_mode != "manual"
+                and learned_charge_plan.mode in {"wait", "charge"}
+                and charge_start is not None
+                and charge_end is not None
+                and charge_end > now
+            ):
+                charge_plan = {
+                    "status": "charge_window",
+                    "start": charge_start.isoformat(),
+                    "end": charge_end.isoformat(),
+                    "energy_kwh": learned_charge_plan.required_charge_energy_kwh,
+                }
+            elif learned_planning_enabled and season_mode != "manual" and learned_charge_plan.mode == "classic_fallback":
+                charge_plan = {"status": "charge_planner_not_ready"}
+            discharge_plan = (
+                _next_discharge_price_window(
+                    price_points, now, effective_discharge_threshold, very_expensive
+                )
+                if season_mode == "winter"
+                else {"status": "no_fixed_discharge_time"}
+            )
+            details["operation_plan"] = {
+                "charge": charge_plan,
+                "discharge": discharge_plan,
+            }
 
             await self._capture_regulation_training_sample(
                 now=now,

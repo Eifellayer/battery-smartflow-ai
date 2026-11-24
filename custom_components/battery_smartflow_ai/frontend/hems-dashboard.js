@@ -521,7 +521,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.69";
+    const version = this._panel?.config?.dashboard_version || "1.0.70";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1196,6 +1196,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const mode = state("ai_status");
       const reason = state("decision_reason");
       const allocation = states[entry.shadow_allocation_entity]?.attributes;
+      const nextAction = state("next_action_state");
       if (!engine && !mode && !reason && !allocation) return [];
       const dispatch = allocation?.dispatch_status;
       const price = state("price_now");
@@ -1234,8 +1235,44 @@ class BatterySmartFlowDashboard extends HTMLElement {
         ...(lowPrice ? [[price, "health_import_price"], [threshold, "health_discharge_threshold"]] : []),
       ].filter(([entity]) => entity && Number.isFinite(Number(entity.state)))
         .map(([entity, key]) => `${this._t(key)}: ${this._value(entity)}`);
-      return [{ title: allocation?.group_name || entry.system, summary, values, blocked }];
+      return [{
+        title: allocation?.group_name || entry.system,
+        summary, values, blocked, nextAction,
+        priceUnit: price?.attributes?.unit_of_measurement,
+      }];
     });
+  }
+
+  _operationPlan(nextAction, priceUnit) {
+    const { charge, discharge } = nextAction?.attributes || {};
+    if (!charge || !discharge) return "";
+    const locale = this._hass?.locale?.language;
+    const format = new Intl.DateTimeFormat(locale, {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      timeZone: this._hass?.config?.time_zone || undefined,
+    });
+    const time = (iso) => iso && Number.isFinite(Date.parse(iso)) ? format.format(new Date(iso)) : "";
+    const row = (direction, plan, isActive) => {
+      const start = time(plan.start);
+      const end = time(plan.end);
+      const range = start && end ? `${start} – ${end}` : start;
+      const status = this._t(isActive ? `plan_${direction}_active` : `plan_${plan.status}`);
+      const details = [range];
+      if (direction === "charge" && Number.isFinite(plan.energy_kwh) && plan.energy_kwh > 0) {
+        details.push(`${plan.energy_kwh.toLocaleString(locale, { maximumFractionDigits: 2 })} kWh`);
+      }
+      if (direction === "discharge" && Number.isFinite(plan.price) && priceUnit) {
+        details.push(`${plan.price.toLocaleString(locale, { maximumFractionDigits: 4 })} ${priceUnit}`);
+      }
+      return `<article><small>${this._escape(this._t(`plan_next_${direction}`))}</small>
+        <strong>${this._escape(status)}</strong>
+        ${details.some(Boolean) ? `<small>${this._escape(details.filter(Boolean).join(" · "))}</small>` : ""}
+      </article>`;
+    };
+    return `<div class="health-grid operation-plan">
+      ${row("charge", charge, nextAction.state === "charging_active")}
+      ${row("discharge", discharge, nextAction.state === "discharging_active")}
+    </div>`;
   }
 
   _healthSummary(systems, entities) {
@@ -1270,9 +1307,10 @@ class BatterySmartFlowDashboard extends HTMLElement {
     if (!systems.length && !messages.length) return "";
     const details = `${warnings.length ? `<ul>${warnings.map((warning) =>
       `<li>${this._escape(warning)}</li>`).join("")}</ul>` : ""}
-      ${messages.map(({ title, summary, values }) => `<article class="regulation-message">
+      ${messages.map(({ title, summary, values, nextAction, priceUnit }) => `<article class="regulation-message">
         <strong>${this._escape(title)}</strong><p>${this._escape(summary)}</p>
         ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}
+        ${this._operationPlan(nextAction, priceUnit)}
       </article>`).join("")}`;
     return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div><div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div>${details}</section>`;
   }

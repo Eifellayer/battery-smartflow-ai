@@ -2649,6 +2649,9 @@ class ZendureSmartFlowSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        if self.entity_description.runtime_key == "next_action_state":
+            details = (self.coordinator.data or {}).get("details") or {}
+            return details.get("operation_plan")
         if self.entity_description.runtime_key == "shadow_allocation_status":
             details = (self.coordinator.data or {}).get("details") or {}
             return details.get("shadow_allocation")

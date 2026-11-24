@@ -64,10 +64,12 @@ from custom_components.battery_smartflow_ai.core.models import (
     CommandExecutionResult,
     CommandExecutionStatus,
     DeviceCommand,
+    MarketPricePoint,
 )
 from custom_components.battery_smartflow_ai.coordinator import (
     ZendureSmartFlowCoordinator,
     _native_battery_power_totals,
+    _next_discharge_price_window,
 )
 
 # The coordinator only needs the Store adapter as a type here. Let the store
@@ -78,6 +80,28 @@ from custom_components.battery_smartflow_ai.core.models.states import (
     MeasuredValue,
     ValueValidity,
 )
+
+
+def test_next_discharge_price_window_uses_future_intervals_only():
+    now = datetime(2026, 11, 24, 22, tzinfo=timezone.utc)
+
+    def point(minutes, price):
+        start = now + timedelta(minutes=minutes)
+        return MarketPricePoint(start, start + timedelta(minutes=15), price)
+
+    intervals = [point(60, 0.60), point(-5, 0.60), point(15, 0.46), point(30, 0.49)]
+    assert _next_discharge_price_window(intervals, now, 0.50, 0.49) == {
+        "status": "price_opportunity",
+        "start": point(30, 0.49).start.isoformat(),
+        "end": point(30, 0.49).end.isoformat(),
+        "price": 0.49,
+    }
+    assert _next_discharge_price_window(intervals, now, 0.65) == {
+        "status": "no_matching_price",
+    }
+    assert _next_discharge_price_window(intervals[1:2], now, 0.49) == {
+        "status": "no_price_forecast",
+    }
 
 
 def _device_state(charge: float | None, discharge: float | None):
