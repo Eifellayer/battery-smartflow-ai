@@ -57,6 +57,7 @@ from custom_components.battery_smartflow_ai.const import (
     CONF_CELL_VOLTAGE_PROTECTION_ENABLED,
     CONF_ELECTRICAL_TOPOLOGY,
     CONF_EXPERT_MODE_ENABLED,
+    SETTING_MAX_CHARGE,
     SETTING_MAX_DISCHARGE,
 )
 from custom_components.battery_smartflow_ai.core.models import (
@@ -165,20 +166,57 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         options = coordinator.entry.options
         circuit = options[CONF_ELECTRICAL_TOPOLOGY]["circuits"]["shared"]
         circuit["max_power_w"] = 2000
-        options[SETTING_MAX_DISCHARGE] = 2000
+        runtime = coordinator.native_zendure
         demand = DeviceCommand("output", output_limit_w=2500)
+        for controller, hardware_limit in devices.items():
+            runtime.selected_device_id = controller
+            for configured_limit in (None, 0, 700, 1300, 2000):
+                if configured_limit is not None:
+                    options[SETTING_MAX_DISCHARGE] = configured_limit
+                expected = 700 if configured_limit is None else configured_limit
+                assert coordinator._native_group_power_limit_w(
+                    runtime, setting=SETTING_MAX_DISCHARGE,
+                    selected_hardware_limit_w=hardware_limit,
+                    reserve_soc_pct=20, maximum_soc_pct=95,
+                ) == expected
+                _, group_targets = coordinator._productive_group_targets(demand, runtime)
+                assert sum(cmd.output_limit_w for cmd in group_targets.values()) == expected
+                preview = coordinator._shadow_group_allocation(
+                    strategy_intent=SimpleNamespace(requested_mode="output"),
+                    charge_power_w=0, discharge_power_w=2500, soc_min=20, soc_max=95,
+                )
+                assert preview["group_max_discharge_w"] == expected
+                assert preview["proposed_power_w"] == expected
+            options.pop(SETTING_MAX_DISCHARGE)
+
+        runtime.selected_device_id = "Hyper 2000"
+        options[SETTING_MAX_DISCHARGE] = 2000
         status, targets = coordinator._productive_group_targets(
             demand, coordinator.native_zendure
         )
         assert status == "group_control_active"
         assert {device: cmd.output_limit_w for device, cmd in targets.items()} == devices
 
+        intent = SimpleNamespace(metadata={"group_selected_max_output_w": 500})
+        _, tapered = coordinator._productive_group_targets(
+            demand, runtime, strategy_intent=intent
+        )
+        assert {device: cmd.output_limit_w for device, cmd in tapered.items()} == {
+            "Hyper 2000": 500, "SolarFlow 800 Plus": 800,
+        }
+        options[SETTING_MAX_CHARGE] = 600
+        _, charge_targets = coordinator._productive_group_targets(
+            DeviceCommand("input", input_limit_w=1800), runtime
+        )
+        assert sum(cmd.input_limit_w for cmd in charge_targets.values()) == 600
+        options.pop(SETTING_MAX_CHARGE)
+
         options[SETTING_MAX_DISCHARGE] = 1300
         _, targets = coordinator._productive_group_targets(demand, coordinator.native_zendure)
         assert sum(cmd.output_limit_w for cmd in targets.values()) == 1300
         assert coordinator._native_group_power_limit_w(
             coordinator.native_zendure, setting=SETTING_MAX_DISCHARGE,
-            selected_limit_w=1200, reserve_soc_pct=20, maximum_soc_pct=95,
+            selected_hardware_limit_w=1200, reserve_soc_pct=20, maximum_soc_pct=95,
         ) == 1300
 
         # The economic request must not undo the technical deadband/ramp.
@@ -230,7 +268,7 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         coordinator._persist.pop("group_control_target_changed_at")
         coordinator._get_grid = lambda: (600.0, 0.0)
 
-        options.pop(SETTING_MAX_DISCHARGE)
+        options[SETTING_MAX_DISCHARGE] = 2000
         circuit["max_power_w"] = 1400
         started = await coordinator._execute_device_command(
             DeviceCommand("output", output_limit_w=1700)

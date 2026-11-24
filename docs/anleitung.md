@@ -174,6 +174,8 @@ Das Gruppenziel bestimmt, wie viele Watt die Gruppe insgesamt laden oder entlade
 
 Die Verteilung erfolgt stufenweise. Angenommen, zwei Geräte dürfen jeweils 800 W entladen und der gemeinsame Stromkreis lässt die Gesamtleistung zu. Im ersten Durchgang nutzt die Gruppe je Gerät bis zu 75 % seines wirksamen Limits, hier also 600 W. Erst wenn dieser Bereich bei beiden ausgeschöpft ist, nutzt sie den Rest bis zum jeweiligen Maximum.
 
+Bei aktiver Gruppensteuerung begrenzen **Max. Entladeleistung** und **Max. AC-Ladeleistung** jeweils die Summe der Sollwerte. 700 W Entladeleistung gelten damit für die gesamte Gruppe. Jedes Gerät behält seine eigene Leistungsgrenze. Die Vorschau zeigt das Gruppenlimit und die verfügbaren Gerätegrenzen. Zuordnungen und Stromkreisgrenzen können die tatsächlich verteilbare Leistung weiter senken.
+
 | Entladeziel der Gruppe | Führendes Gerät | Zweites Gerät |
 | ---: | ---: | ---: |
 | 500 W | 500 W | 0 W |

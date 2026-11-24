@@ -309,12 +309,15 @@ def group_power_ceiling(options: Mapping[str, Any], profile_field: str) -> float
 
 
 def limit_group_power(options: Mapping[str, Any], setting: str, power_w: float) -> float:
-    """Apply a saved group-wide user limit where one has been configured."""
+    """Apply the group-wide limit shown by the power setting, including its default."""
 
+    from .const import DEFAULT_MAX_CHARGE, DEFAULT_MAX_DISCHARGE, SETTING_MAX_CHARGE
+
+    default = DEFAULT_MAX_CHARGE if setting == SETTING_MAX_CHARGE else DEFAULT_MAX_DISCHARGE
     try:
-        limit_w = float(options[setting])
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return power_w
+        limit_w = float(options.get(setting, default))
+    except (TypeError, ValueError, OverflowError):
+        limit_w = default
     return min(power_w, max(0.0, limit_w)) if math.isfinite(limit_w) else 0.0
 
 
