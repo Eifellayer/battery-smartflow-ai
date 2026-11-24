@@ -1277,7 +1277,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if not math.isfinite(residual):
                         return ("group_near_zero_grid_unavailable", None)
                     now = dt_util.as_utc(self._clock.utc_now())
-                    changed_at = _parse_dt(self._persist.get("group_control_target_changed_at"))
+                    changed_at = dt_util.parse_datetime(str(self._persist.get("group_control_target_changed_at") or ""))
                     settling = changed_at is not None and 0 <= (
                         now - dt_util.as_utc(changed_at)
                     ).total_seconds() < 12.0
