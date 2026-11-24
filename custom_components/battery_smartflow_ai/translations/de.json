@@ -128,21 +128,21 @@
         }
       },
       "user": {
-        "title": "Battery SmartFlow AI einrichten",
+        "title": "Netzmessung und Datenquellen auswählen",
         "menu_options": {
           "native_login": "Zendure direkt verbinden",
           "legacy": "Vorhandene HA-Entitäten verwenden"
         }
       },
       "native_login": {
-        "title": "Bei Zendure anmelden",
+        "title": "Zendure-Konto verbinden",
         "description": "Der App-Token wird geschützt gespeichert. Die lokale Verbindung wird automatisch anhand des Gerätemodells gewählt.",
         "data": {
           "native_zendure_app_token": "App Token"
         }
       },
       "native_device": {
-        "title": "Zendure-System auswählen",
+        "title": "Verbindung des Zendure-Systems einrichten",
         "description": "Zendure hat folgende Geräte gemeldet:\n\n{device_summary}\n\nWähle genau ein System. Battery SmartFlow AI verwendet automatisch den vom Modell unterstützten lokalen Transport. Die native Steuerung wird nur mit dem separaten Schalter darunter aktiviert. Ist sie aktiv, schreibt BSFAI nicht mehr über die konfigurierten Z-HA-Entitäten.",
         "data": {
           "native_zendure_selected_device": "Zendure-System",
@@ -163,6 +163,16 @@
           "native_zendure_local_mqtt_username": "Zugangsdaten des vorhandenen Brokers für BSFAI.",
           "native_zendure_local_mqtt_password": "Die Punktmaske unverändert lassen, um das gespeicherte private Passwort weiterzuverwenden.",
           "native_zendure_zensdk_ip": "Optionale private IPv4-Adresse für dieses Zendure-System. Im Router eine DHCP-Reservierung einrichten. Bei gesetzter Adresse verwenden ZenSDK-Anfragen nur diese Adresse und umgehen mDNS für dieses Gerät."
+        }
+      },
+      "native_controller": {
+        "title": "Aktives Zendure-Steuergerät auswählen",
+        "description": "Wähle das eingerichtete System, das BSFAI im Einzelgerätebetrieb steuern soll. Bei aktivierter Gruppenregelung können die eingerichteten Mitglieder der jeweiligen Gruppe gemeinsam gesteuert werden.",
+        "data": {
+          "native_zendure_active_device": "Aktives Steuergerät"
+        },
+        "data_description": {
+          "native_zendure_active_device": "Dieses System wird außerhalb der Gruppenregelung von BSFAI gesteuert. Im Gruppenbetrieb werden die eingerichteten Mitglieder der aktiven Gruppe gemeinsam geregelt. Der für dieses System gespeicherte Kommunikationsweg wird verwendet."
         }
       },
       "native_external": {
@@ -287,11 +297,12 @@
         "title": "Battery SmartFlow AI einstellen",
         "description": "Wähle den Einstellungsbereich aus. Gerätespezifische Regelwerte werden automatisch durch das ausgewählte Geräteprofil verwaltet.",
         "menu_options": {
-          "general": "Allgemein",
+          "systems_groups": "Systeme & Gruppen",
+          "general": "Anlage und Messwerte",
           "expert": "Expertenmodus",
           "dashboard": "HEMS-Dashboard",
           "smart_mode": "Zendure-SmartMode",
-          "native_zendure": "Natives Zendure",
+          "native_zendure": "Zendure-Geräte und Controller",
           "training": "Regelungstraining",
           "debug": "Debug-Modus"
         }

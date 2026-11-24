@@ -165,6 +165,16 @@
           "native_zendure_zensdk_ip": "Optioneel privé IPv4-adres voor dit Zendure-systeem. Reserveer het in uw router. Als dit is ingesteld, gebruikt ZenSDK alleen dit adres en wordt mDNS voor dit apparaat omzeild."
         }
       },
+      "native_controller": {
+        "title": "Actief Zendure-besturingssysteem kiezen",
+        "description": "Kies het ingestelde systeem dat BSFAI bij bediening van één systeem moet besturen. Als groepsregeling is ingeschakeld, kunnen de ingestelde systemen in de actieve groep samen worden bestuurd.",
+        "data": {
+          "native_zendure_active_device": "Actief besturingssysteem"
+        },
+        "data_description": {
+          "native_zendure_active_device": "Dit is het systeem dat BSFAI buiten groepsregeling bestuurt. In groepsmodus worden de ingestelde systemen van de actieve groep samen geregeld. De voor dit systeem opgeslagen communicatieverbinding wordt gebruikt."
+        }
+      },
       "native_external": {
         "title": "Battery SmartFlow AI instellen",
         "description": "Select external measurements and price sources. Hardware data and pack capacities are detected automatically.",
@@ -287,6 +297,7 @@
         "title": "Battery SmartFlow AI instellen",
         "description": "Kies welk instellingenonderdeel je wilt bewerken. Apparaatspecifieke regelwaarden worden automatisch beheerd door het geselecteerde apparaatprofiel.",
         "menu_options": {
+          "systems_groups": "Systemen en groepen",
           "general": "Algemeen",
           "dashboard": "HEMS-dashboard",
           "expert": "Expertmodus",

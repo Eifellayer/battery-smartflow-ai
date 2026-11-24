@@ -32,6 +32,10 @@ from custom_components.battery_smartflow_ai.hardware.zendure.device_matrix impor
     preferred_local_transport,
     resolve_zendure_device,
 )
+from custom_components.battery_smartflow_ai.hardware.zendure.legacy import (
+    legacy_provisioning_default,
+)
+from custom_components.battery_smartflow_ai.native_config_ui import STORED_APP_TOKEN_MASK
 from custom_components.battery_smartflow_ai.hardware.zendure.zensdk import (
     normalize_zensdk_ipv4,
 )
@@ -181,6 +185,8 @@ def load_flow_namespace():
         resolve_price_currency=resolve_price_currency,
         price_input_profile=price_input_profile,
         native_device_label=native_device_label,
+        legacy_provisioning_default=legacy_provisioning_default,
+        STORED_APP_TOKEN_MASK=STORED_APP_TOKEN_MASK,
         native_device_summary_line=native_device_summary_line,
         validate_shelly_host=validate_shelly_host,
         SETUP_COMPLETE=SETUP_COMPLETE,
@@ -316,7 +322,7 @@ class NativeSetupTests(unittest.IsolatedAsyncioTestCase):
             const.CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT: "zensdk",
         })
         self.assertEqual(second["type"], "form")
-        self.assertEqual(second["step_id"], "native_external")
+        self.assertEqual(second["step_id"], "native_controller")
         self.assertEqual(
             flow._native_options[const.CONF_NATIVE_ZENDURE_DEVICE_SETUPS][
                 "devices"
@@ -351,9 +357,14 @@ class NativeSetupTests(unittest.IsolatedAsyncioTestCase):
                         const.CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT: "cloud_mqtt",
                         const.CONF_NATIVE_ZENDURE_CONTROL_ENABLED: True,
                     })
-                self.assertEqual(result["step_id"], "native_external")
+                self.assertEqual(result["step_id"], "native_controller")
                 starting_profile = "Hyper 2000" if first is hyper else "SF800Plus"
                 self.assertEqual(config._user_input[const.CONF_DEVICE_PROFILE], starting_profile)
+                next_step = await config.async_step_native_controller({
+                    const.CONF_NATIVE_ZENDURE_ACTIVE_DEVICE: hyper_id,
+                })
+                self.assertEqual(next_step["step_id"], "native_external")
+                self.assertEqual(config._user_input[const.CONF_DEVICE_PROFILE], "Hyper 2000")
 
                 options = load_flow_namespace()["ZendureSmartFlowOptionsFlow"]()
                 options.config_entry = SimpleNamespace(
@@ -361,6 +372,11 @@ class NativeSetupTests(unittest.IsolatedAsyncioTestCase):
                 )
                 options._native_bootstrap = config._native_bootstrap
                 options._native_token = config._native_options[const.CONF_NATIVE_ZENDURE_APP_TOKEN]
+                options.config_entry.options = {
+                    **config._native_options,
+                    const.CONF_NATIVE_ZENDURE_SELECTED_DEVICE: solar.devices[0].candidate.candidate_id,
+                    const.CONF_DEVICE_PROFILE: "SF800Plus",
+                }
                 saved = await options.async_step_native_zendure_controller({
                     const.CONF_NATIVE_ZENDURE_ACTIVE_DEVICE: hyper_id,
                     const.CONF_NATIVE_ZENDURE_CONTROL_ENABLED: True,

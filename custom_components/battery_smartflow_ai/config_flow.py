@@ -720,7 +720,7 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._user_input["connection_type"] = "native"
                         if active_profile_key is not None:
                             self._user_input[CONF_DEVICE_PROFILE] = active_profile_key
-                        return await self.async_step_native_external()
+                        return await self.async_step_native_controller()
                     next_id = next(
                         item.candidate.candidate_id for item in devices
                         if item.candidate.supported
@@ -765,6 +765,41 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ZendureSmartFlowOptionsFlow._native_device_summary(devices)
                 ),
             },
+        )
+
+    async def async_step_native_controller(self, user_input=None):
+        """Choose the controller after configuring the individual devices."""
+
+        setup = self._native_setup_map
+        choices = {
+            item.candidate.candidate_id: item
+            for item in self._native_bootstrap.devices
+            if native_device_profile_key(setup, item.candidate.candidate_id) is not None
+        }
+        if len(choices) < 2:
+            return await self.async_step_native_external()
+
+        errors = {}
+        if user_input is not None:
+            selected_id = user_input.get(CONF_NATIVE_ZENDURE_ACTIVE_DEVICE)
+            if selected_id in choices:
+                self._native_options[CONF_NATIVE_ZENDURE_SELECTED_DEVICE] = selected_id
+                self._native_options[CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT] = (
+                    setup["devices"][selected_id]["transport"]
+                )
+                self._user_input[CONF_DEVICE_PROFILE] = native_device_profile_key(
+                    setup, selected_id
+                )
+                return await self.async_step_native_external()
+            errors["base"] = "controller_device_not_configured"
+
+        default = self._native_options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE)
+        return self.async_show_form(
+            step_id="native_controller",
+            data_schema=ZendureSmartFlowOptionsFlow._native_controller_schema(
+                choices, default if default in choices else next(iter(choices)), None
+            ),
+            errors=errors,
         )
 
     async def async_step_native_external(self, user_input=None):
@@ -1518,11 +1553,12 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options=[
+                "native_zendure",
+                "systems_groups",
                 "general",
                 "expert",
-                "dashboard",
                 "smart_mode",
-                "native_zendure",
+                "dashboard",
                 "training",
                 "debug",
             ],
@@ -2399,9 +2435,11 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
     ):
         """Open the persistent device and battery-group editor."""
 
-        menu_options = ["group_create"]
-        if self._group_choices():
-            menu_options.extend(("group_edit_select", "group_remove"))
+        menu_options = (
+            ["group_edit_select", "group_create", "group_remove"]
+            if self._group_choices()
+            else ["group_create"]
+        )
         return self.async_show_menu(
             step_id="systems_groups", menu_options=menu_options
         )
@@ -3149,7 +3187,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
 
     @staticmethod
     def _native_controller_schema(
-        devices, selected_default: str, control_enabled: bool
+        devices, selected_default: str, control_enabled: bool | None
     ) -> vol.Schema:
         device_choices = [
             {
@@ -3162,23 +3200,22 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             }
             for device_id, item in devices.items()
         ]
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_NATIVE_ZENDURE_ACTIVE_DEVICE,
-                    default=selected_default,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=device_choices,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(
-                    CONF_NATIVE_ZENDURE_CONTROL_ENABLED,
-                    default=control_enabled,
-                ): selector.BooleanSelector(),
-            }
-        )
+        schema = {
+            vol.Required(
+                CONF_NATIVE_ZENDURE_ACTIVE_DEVICE,
+                default=selected_default,
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=device_choices,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+        }
+        if control_enabled is not None:
+            schema[vol.Required(
+                CONF_NATIVE_ZENDURE_CONTROL_ENABLED, default=control_enabled
+            )] = selector.BooleanSelector()
+        return vol.Schema(schema)
 
     @staticmethod
     def _native_device_schema(
@@ -3246,6 +3283,8 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 value,
             ),
         )
+        if available_transports and stored_transport not in available_transports:
+            stored_transport = available_transports[0]
         zensdk_devices = [
             item
             for item in transport_devices
@@ -3331,7 +3370,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         if any(
             preferred_local_transport(item.candidate.identity)
             is ZendureTransport.LOCAL_MQTT
-            for item in devices
+            for item in transport_devices
         ):
             schema.update({
                 vol.Optional(
