@@ -1185,8 +1185,58 @@ class BatterySmartFlowDashboard extends HTMLElement {
     return `${Math.floor(age / 60)} ${this._t("minutes_ago")}`;
   }
 
+  _regulationMessages() {
+    const states = this._hass?.states || {};
+    const entries = this._panel?.config?.battery_groups || [];
+    return entries.flatMap((entry) => {
+      const state = (key) => states[entry.regulation_status_entities?.[key]];
+      const engine = state("engine_health");
+      const mode = state("ai_status");
+      const reason = state("decision_reason");
+      const allocation = states[entry.shadow_allocation_entity]?.attributes;
+      if (!engine && !mode && !reason && !allocation) return [];
+      const dispatch = allocation?.dispatch_status;
+      const price = state("price_now");
+      const threshold = state("effective_discharge_threshold");
+      const lowPrice = reason?.state === "idle" && mode?.state === "standby" &&
+        state("season_mode")?.state === "winter" &&
+        price?.attributes?.unit_of_measurement &&
+        price.attributes.unit_of_measurement === threshold?.attributes?.unit_of_measurement &&
+        Number.isFinite(Number(price.state)) && Number.isFinite(Number(threshold.state)) &&
+        Number(price.state) < Number(threshold.state);
+      const blocked = Boolean((engine && engine.state !== "ok") ||
+        (dispatch && dispatch !== "group_control_active"));
+      let summary;
+      if (engine && engine.state !== "ok") {
+        summary = this._t(`health_engine_${engine.state}`);
+        if (summary === `health_engine_${engine.state}`) {
+          summary = `${this._t("health_engine_check")} (${engine.state})`;
+        }
+      } else if (blocked) {
+        const code = dispatch.split(":")[0];
+        summary = this._t(`health_dispatch_${code}`);
+        if (summary === `health_dispatch_${code}`) {
+          summary = `${this._t("health_dispatch_check")} (${code})`;
+        }
+      } else if (lowPrice) {
+        summary = this._t("health_price_below_threshold");
+      } else if (mode?.state === "standby" && ["idle", "standby", "state_idle"].includes(reason?.state)) {
+        summary = this._t("health_standby");
+      } else {
+        const label = (entity) => entity && (this._hass.formatEntityState?.(entity) || entity.state);
+        summary = [label(mode), label(reason)].filter(Boolean).join(" · ") ||
+          this._t("health_waiting");
+      }
+      const values = [
+        [state("grid_power"), "health_grid_power"],
+        ...(lowPrice ? [[price, "health_import_price"], [threshold, "health_discharge_threshold"]] : []),
+      ].filter(([entity]) => entity && Number.isFinite(Number(entity.state)))
+        .map(([entity, key]) => `${this._t(key)}: ${this._value(entity)}`);
+      return [{ title: allocation?.group_name || entry.system, summary, values, blocked }];
+    });
+  }
+
   _healthSummary(systems, entities) {
-    if (!systems.length) return "";
     const online = systems.filter((system) => system.online).length;
     const offline = systems.length - online;
     const ageRanks = { fresh: 0, recent: 1, delayed: 2, stale: 3 };
@@ -1203,9 +1253,26 @@ class BatterySmartFlowDashboard extends HTMLElement {
       (result, bucket) => ageRanks[bucket] > ageRanks[result] ? bucket : result,
       knownBuckets[0] || null,
     );
-    const needsAttention = offline > 0 || knownBuckets.length < systems.length ||
-      (oldest !== null && ageRanks[oldest] >= ageRanks.delayed);
-    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : "all_online"))}</span></div><div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div></section>`;
+    const warnings = systems.flatMap((system, index) => {
+      const bucket = buckets[index];
+      const reasons = [];
+      if (!system.online) reasons.push(this._t("offline"));
+      if (bucket == null) reasons.push(this._t("health_telemetry_missing"));
+      else if (ageRanks[bucket] >= ageRanks.delayed) {
+        reasons.push(this._t(`health_telemetry_${bucket}`));
+      }
+      return reasons.length ? [`${system.name || this._t("system")} · ${reasons.join(" · ")}`] : [];
+    });
+    const messages = this._regulationMessages();
+    const needsAttention = warnings.length > 0 || messages.some((message) => message.blocked);
+    if (!systems.length && !messages.length) return "";
+    const details = `${warnings.length ? `<ul>${warnings.map((warning) =>
+      `<li>${this._escape(warning)}</li>`).join("")}</ul>` : ""}
+      ${messages.map(({ title, summary, values }) => `<article class="regulation-message">
+        <strong>${this._escape(title)}</strong><p>${this._escape(summary)}</p>
+        ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}
+      </article>`).join("")}`;
+    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div><div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div>${details}</section>`;
   }
 
   _batteryGroupMemberCard(member, entities) {

@@ -287,6 +287,15 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
             {
                 "entry_id": entry.entry_id,
                 "system": entry.title,
+                "regulation_status_entities": {
+                    key: entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, f"{DOMAIN}_{entry.entry_id}_{key}"
+                    )
+                    for key in (
+                        "engine_health", "ai_status", "decision_reason", "season_mode",
+                        "price_now", "effective_discharge_threshold", "grid_power",
+                    )
+                },
                 "shadow_allocation_entity": entity_registry.async_get_entity_id(
                     "sensor",
                     DOMAIN,
