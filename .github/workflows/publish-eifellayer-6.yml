@@ -1,0 +1,44 @@
+name: Test and publish 6.0.10-eifellayer.6
+on:
+  push:
+    branches: ['release/6.0.10-eifellayer.6']
+    paths: ['.github/workflows/publish-eifellayer-6.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 955083427e21067974f44a2def164e8d10f5dbf7
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest voluptuous
+      - run: >-
+          python -m pytest -q
+          tests/test_dev1_5_cell_voltage_and_house_load.py
+          tests/test_technical_regulation_core.py
+          tests/test_native_power_controller.py
+          tests/test_native_beta2.py
+          tests/test_native_source_fusion.py
+          tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+          tests/test_command_execution_state.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: |
+          if gh release view 6.0.10-eifellayer.6 >/dev/null 2>&1; then exit 0; fi
+          gh release create 6.0.10-eifellayer.6 --target 955083427e21067974f44a2def164e8d10f5dbf7 --latest \
+            --title "Battery SmartFlow AI 6.0.10-eifellayer.6" \
+            --notes "Near-zero: 12 Sekunden Beruhigungszeit vor weiteren Erhöhungen, Korrektur anhand aktuellem Netzbezug; Absenkungen ohne Zusatzwartezeit. Gerätespezifischer vorheriger Sollwert verhindert unnötige Nullbefehle an inaktive Mitglieder. Ganzzahlige Wattwerte ohne Aufrunden über Grenzwerte. Gezielte Regressionstests bestanden; Liveprüfung steht aus."
