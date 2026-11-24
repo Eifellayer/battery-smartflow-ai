@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 955083427e21067974f44a2def164e8d10f5dbf7
+          ref: 1087f3b2dee16e1b3507e6098cacaf12aaf12562
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -39,6 +39,6 @@ jobs:
     steps:
       - run: |
           if gh release view 6.0.10-eifellayer.6 >/dev/null 2>&1; then exit 0; fi
-          gh release create 6.0.10-eifellayer.6 --target 955083427e21067974f44a2def164e8d10f5dbf7 --latest \
+          gh release create 6.0.10-eifellayer.6 --target 1087f3b2dee16e1b3507e6098cacaf12aaf12562 --latest \
             --title "Battery SmartFlow AI 6.0.10-eifellayer.6" \
             --notes "Near-zero: 12 Sekunden Beruhigungszeit vor weiteren Erhöhungen, Korrektur anhand aktuellem Netzbezug; Absenkungen ohne Zusatzwartezeit. Gerätespezifischer vorheriger Sollwert verhindert unnötige Nullbefehle an inaktive Mitglieder. Ganzzahlige Wattwerte ohne Aufrunden über Grenzwerte. Gezielte Regressionstests bestanden; Liveprüfung steht aus."
