@@ -10,10 +10,11 @@ from .native_device_setup import native_device_profile_key
 
 MEMBER_GRID_CHARGE_SPREADS = "member_grid_charge_spreads"
 MAX_GRID_CHARGE_SPREAD_PCT = 100
+SF800_PLUS_SUMMER_PV_BUFFER_PCT = 10.0
 
 
 def member_grid_charge_policy(options, members, default_spread_pct):
-    """Return (gross spread, estimated AC efficiency, winter-only) by device."""
+    """Return (gross price spread, AC efficiency, extra summer PV buffer) by device."""
 
     saved = options.get(MEMBER_GRID_CHARGE_SPREADS)
     saved = saved if isinstance(saved, Mapping) else {}
@@ -35,7 +36,7 @@ def member_grid_charge_policy(options, members, default_spread_pct):
         policies[key] = (
             min(MAX_GRID_CHARGE_SPREAD_PCT, max(0.0, spread)),
             efficiency,
-            profile == "SF800Plus",
+            SF800_PLUS_SUMMER_PV_BUFFER_PCT if profile == "SF800Plus" else 0.0,
         )
     return policies
 
@@ -51,13 +52,24 @@ def minimum_future_price(price: float, spread_pct: float, efficiency: float) -> 
 def eligible_grid_charge_members(
     policies: Mapping, price: float | None, future_prices: Sequence[float], *, winter: bool,
 ) -> tuple[str, ...]:
-    """Find members whose replacement energy can be used at a higher tariff."""
+    """Allow classic price charging only where no summer PV budget is required."""
 
     peak = max((value for value in future_prices if math.isfinite(value)), default=0.0)
     if price is None or not math.isfinite(price) or peak <= 0 or peak <= price:
         return ()
     return tuple(
-        key for key, (spread, efficiency, winter_only) in policies.items()
-        if (winter or not winter_only)
+        key for key, (spread, efficiency, summer_pv_buffer_pct) in policies.items()
+        if (winter or not summer_pv_buffer_pct)
         and peak + 1e-9 >= minimum_future_price(price, spread, efficiency)
     )
+
+
+def summer_grid_charge_budget_kwh(
+    *, capacity_kwh: float, soc_pct: float, maximum_soc_pct: float,
+    extra_buffer_pct: float, expected_solar_input_kwh: float, round_trip_efficiency: float,
+) -> float:
+    """AC energy that fits below the SoC limit after forecast PV and its buffer."""
+
+    charge_efficiency = math.sqrt(round_trip_efficiency)
+    space_in_battery_kwh = capacity_kwh * (maximum_soc_pct - soc_pct - extra_buffer_pct) / 100
+    return max(0.0, space_in_battery_kwh / charge_efficiency - expected_solar_input_kwh)

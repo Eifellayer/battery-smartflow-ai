@@ -206,8 +206,6 @@ def test_native_battery_power_totals_require_complete_system_readings() -> None:
 
 def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
     async def run():
-        from datetime import timedelta
-
         from custom_components.battery_smartflow_ai.core.models.market import (
             MarketPrice, MarketPriceDirection, MarketPriceForecast, MarketPricePoint, MarketPriceValidity,
         )
@@ -314,13 +312,6 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert split_targets["SolarFlow 800 Plus"].input_limit_w == 350
         options.pop(SETTING_MAX_CHARGE)
 
-        points = tuple(MarketPricePoint(
-            now + timedelta(hours=i), now + timedelta(hours=i + 1), 0.40 if i == 0 else 0.48,
-        ) for i in range(7))
-        market = MarketPrice(
-            MarketPriceDirection.IMPORT, 0.40, "EUR", "€/kWh", now, "test",
-            MarketPriceValidity.VALID, True, False, MarketPriceForecast(points),
-        )
         snapshots = runtime.shadow_allocation_snapshots
         runtime.shadow_allocation_snapshots = lambda **kwargs: [
             {**item, "soc_pct": 20} for item in snapshots(**kwargs)
@@ -330,20 +321,51 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
             return job()
 
         coordinator.hass = SimpleNamespace(async_add_executor_job=executor)
-        summary, charge_w = await coordinator._economic_group_plan(
-            SimpleNamespace(
-                now=now, ai_mode="automatic", season="winter", soc_min=20, soc_max=95,
-                grid_sensor_valid=True, pv_sensor_valid=True, soc_limits_valid=True,
-                power_limits_valid=True, forecast=None, import_market_price=market,
-                export_market_price=None, profit_margin_pct=27,
-            ), runtime,
-            current_ac_input_w=1200, load_model=None, learned_ready=False,
-            forecast_base_load_w=400, selected_capacity_kwh=2, current_net_load_w=300,
-            grid_charge_policy={"Hyper 2000": (27, 0.79, False), "SolarFlow 800 Plus": (20, 0.87, True)},
-        )
+
+        async def get_plan(season, price, peak, forecast=None):
+            points = tuple(MarketPricePoint(
+                now + timedelta(hours=i), now + timedelta(hours=i + 1), price if i == 0 else peak,
+            ) for i in range(7))
+            market = MarketPrice(
+                MarketPriceDirection.IMPORT, price, "EUR", "€/kWh", now, "test",
+                MarketPriceValidity.VALID, True, False, MarketPriceForecast(points),
+            )
+            return await coordinator._economic_group_plan(
+                SimpleNamespace(
+                    now=now, ai_mode="automatic", season=season, soc_min=20, soc_max=95,
+                    grid_sensor_valid=True, pv_sensor_valid=True, soc_limits_valid=True,
+                    power_limits_valid=True, forecast=forecast, import_market_price=market,
+                    export_market_price=None, profit_margin_pct=27,
+                ), runtime,
+                current_ac_input_w=1200, load_model=None, learned_ready=False,
+                forecast_base_load_w=400, selected_capacity_kwh=2, current_net_load_w=300,
+                grid_charge_policy={"Hyper 2000": (27, 0.79, 0), "SolarFlow 800 Plus": (20, 0.87, 10)},
+            )
+
+        summary, charge_w = await get_plan("winter", 0.40, 0.48)
         assert summary["status"] == "active_partial_forecast"
         assert summary["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
         assert summary["_member_limits_w"]["Hyper 2000"] == 0
+        assert 0 < charge_w <= 800
+
+        weak_solar = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 1, 100),))
+        summer, charge_w = await get_plan("summer", 0.20, 0.40, weak_solar)
+        assert summer["status"] == "active_partial_forecast"
+        assert summer["summer_grid_charge"][0]["extra_buffer_pct"] == 10
+        assert summer["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
+        assert 0 < charge_w <= 800
+
+        sunny_forecast = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 3, 8000),))
+        sunny, charge_w = await get_plan("summer", 0.20, 0.40, sunny_forecast)
+        assert sunny["summer_grid_charge"][0]["grid_budget_kwh"] == 0
+        assert "grid_charge_kwh" not in sunny
+        assert charge_w <= 0
+
+        unconfirmed, charge_w = await get_plan("summer", 0.20, 0.40)
+        assert unconfirmed["status"] == "load_history_missing"
+        assert charge_w is None
+        negative, charge_w = await get_plan("summer", -0.05, 0.40)
+        assert negative["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
         assert 0 < charge_w <= 800
         runtime.shadow_allocation_snapshots = snapshots
 

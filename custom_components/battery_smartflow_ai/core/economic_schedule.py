@@ -57,6 +57,8 @@ class EconomicBattery:
     round_trip_efficiency: float
     minimum_spread_pct: float
     allow_grid_charge: bool
+    grid_charge_budget_kwh: float | None = None
+    max_grid_purchase_price: float | None = None
 
 
 @dataclass
@@ -210,7 +212,9 @@ def plan_split_economic_dispatch(
     grid = len(batteries) * count
     solar = grid + count
     demand = solar + count
-    source, sink = demand + count, demand + count + 1
+    grid_budgets = demand + count
+    source = grid_budgets + len(batteries)
+    sink = source + 1
     graph: list[list[_Edge]] = [[] for _ in range(sink + 1)]
     for index, slot in enumerate(slots):
         load = min(max_output_w * slot.hours / 1000, max(0.0, slot.net_load_kwh))
@@ -242,16 +246,38 @@ def plan_split_economic_dispatch(
     # input ceiling using the least efficient participant so it cannot be exceeded.
     solar_eta = min(battery.round_trip_efficiency for battery in batteries)
     grid_eta = min(
-        (battery.round_trip_efficiency for battery in batteries if battery.allow_grid_charge),
+        (battery.round_trip_efficiency for battery in batteries
+         if battery.allow_grid_charge and battery.grid_charge_budget_kwh is None),
         default=0.0,
     )
+    for offset, battery in enumerate(batteries):
+        if battery.allow_grid_charge and battery.grid_charge_budget_kwh is not None:
+            _add_edge(graph, source, grid_budgets + offset,
+                      battery.grid_charge_budget_kwh * battery.round_trip_efficiency, 0.0)
     purchases = [[] for _ in batteries]
     solar_edges = [[] for _ in batteries]
     for index, slot in enumerate(slots):
         input_limit = max_input_w * slot.hours / 1000
         surplus = min(input_limit, max(0.0, -slot.net_load_kwh))
+        grid_allowed = [
+            battery.allow_grid_charge and not surplus and (
+                battery.max_grid_purchase_price is None or slot.price <= battery.max_grid_purchase_price
+            )
+            for battery in batteries
+        ]
+        # Reserve a share of the common AC input ceiling for batteries with a
+        # horizon-wide budget. Their separate edges enforce that budget even
+        # when several cheap periods offer more energy than fits before PV.
+        budgeted_input = [
+            min(battery.max_input_w * slot.hours / 1000, battery.grid_charge_budget_kwh)
+            if allowed and battery.grid_charge_budget_kwh is not None else 0.0
+            for battery, allowed in zip(batteries, grid_allowed, strict=True)
+        ]
+        budgeted_total = sum(budgeted_input)
+        share = min(1.0, input_limit / budgeted_total) if budgeted_total > 0 else 1.0
+        shared_input = max(0.0, input_limit - budgeted_total * share)
         _add_edge(graph, source, solar + index, surplus * solar_eta, 0.0)
-        _add_edge(graph, source, grid + index, 0.0 if surplus else input_limit * grid_eta, 0.0)
+        _add_edge(graph, source, grid + index, 0.0 if surplus else shared_input * grid_eta, 0.0)
         for offset, battery in enumerate(batteries):
             node = offset * count + index
             eta = battery.round_trip_efficiency
@@ -265,9 +291,12 @@ def plan_split_economic_dispatch(
                 # At the chosen spread a purchase is eligible if it still saves
                 # money after physical losses. Do not count those losses twice.
                 cost = max(cost, slot.price * (1 + battery.minimum_spread_pct / 100) - 2 * _EPSILON)
-            purchases[offset].append(_add_edge(
-                graph, grid + index, node, limit if battery.allow_grid_charge else 0.0, cost,
-            ))
+            grid_origin = grid + index
+            grid_limit = limit if grid_allowed[offset] else 0.0
+            if battery.grid_charge_budget_kwh is not None:
+                grid_origin = grid_budgets + offset
+                grid_limit = min(grid_limit, budgeted_input[offset] * share * eta)
+            purchases[offset].append(_add_edge(graph, grid_origin, node, grid_limit, cost))
     _send_profitable_flow(graph, source, sink)
 
     dispatch = []

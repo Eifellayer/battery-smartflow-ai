@@ -523,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.75";
+    const version = this._panel?.config?.dashboard_version || "1.0.76";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1403,9 +1403,15 @@ class BatterySmartFlowDashboard extends HTMLElement {
       `<div><dt>${this._escape(this._t(label))}</dt><dd>${this._escape(
         plan[key].toLocaleString(locale, { maximumFractionDigits: 2 })
       )} kWh</dd></div>`);
+    const solarReserve = (plan.summer_grid_charge || []).map((member) => {
+      const amount = (value) => this._escape(value.toLocaleString(locale, { maximumFractionDigits: 2 }));
+      return `<p><strong>${this._escape(member.name)}</strong> ·
+        ${amount(member.forecast_surplus_kwh)} kWh ${this._escape(this._t("cost_expected_pv_surplus"))} +
+        ${amount(member.extra_buffer_pct)} ${this._escape(this._t("cost_extra_pv_buffer"))}</p>`;
+    }).join("");
     return `<div class="energy-budget"><h4>${this._escape(this._t("cost_plan"))}</h4>
       <p>${this._escape(this._t(`cost_${plan.status}`))}</p>
-      ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}
+      ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}${solarReserve}
     </div>`;
   }
 

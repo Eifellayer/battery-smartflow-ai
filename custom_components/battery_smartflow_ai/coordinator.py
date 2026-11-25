@@ -165,7 +165,9 @@ from .hardware.shelly_3em import (
 from .forecast import async_build_forecast_summary
 from .core.economic_schedule import EconomicBattery, plan_economic_dispatch, plan_split_economic_dispatch
 from .economic_planning import economic_slots, import_price_preview
-from .group_grid_charging import eligible_grid_charge_members, member_grid_charge_policy
+from .group_grid_charging import (
+    eligible_grid_charge_members, member_grid_charge_policy, summer_grid_charge_budget_kwh,
+)
 from .learned_planning import (
     LearningSample,
     LearningChargePowerSample,
@@ -1200,6 +1202,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         capacity = stored = 0.0
         devices = []
         batteries = []
+        summer_pv_buffers = {}
         for device_id, item in snapshots.items():
             if (
                 not item["available"] or not item["configured"] or not item["supported"]
@@ -1234,13 +1237,14 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 circuit_ids=tuple(circuits[device_id]),
             ))
             if grid_charge_policy:
-                spread, efficiency, winter_only = grid_charge_policy[device_id]
+                spread, efficiency, summer_pv_buffer_pct = grid_charge_policy[device_id]
                 batteries.append(EconomicBattery(
                     device_id, device_capacity * (maximum - reserve) / 100.0,
                     device_capacity * max(0.0, min(maximum, soc) - reserve) / 100.0,
-                    input_limit, float(item["max_discharge_w"]), efficiency, spread,
-                    ctx.season == "winter" or not winter_only,
+                    input_limit, float(item["max_discharge_w"]), efficiency, spread, True,
                 ))
+                if ctx.season == "summer" and summer_pv_buffer_pct > 0:
+                    summer_pv_buffers[device_id] = (device_capacity, soc, maximum, summer_pv_buffer_pct)
         charge_ceiling = limit_group_power(
             self.entry.options, SETTING_MAX_CHARGE, sum(device.max_charge_w for device in devices),
         )
@@ -1275,17 +1279,58 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         export = ctx.export_market_price
         export_price = export.current_price if export and export.valid else 0.0
-        # The winter price strategy can use the existing base-load estimate
-        # until the learned inputs are ready. Keep the same plan for charging
-        # and discharge so a cheap purchase stays reserved for its price peak.
-        split_fallback = bool(batteries and status != "active" and ctx.season == "winter")
+        # A timed PV forecast lets the summer plan credit solar production
+        # before the expensive slots. Without it, only free or negative grid
+        # prices may open a summer purchase window for the buffered device.
+        summer_offer = summer_pv_buffers and (
+            has_solar_data or any(slot.price <= 0 for slot in slots)
+        )
+        split_fallback = bool(batteries and status != "active" and (
+            ctx.season == "winter" or summer_offer
+        ))
         dispatch_active = status == "active" or split_fallback
+        summer_grid_charge = []
         if batteries:
+            planned_batteries = []
+            for battery in batteries:
+                buffered = summer_pv_buffers.get(battery.device_id)
+                if buffered is None:
+                    planned_batteries.append(replace(battery, allow_grid_charge=(
+                        status == "active" or split_fallback and ctx.season == "winter"
+                    )))
+                    continue
+
+                capacity_kwh, soc_pct, maximum_soc_pct, extra_buffer_pct = buffered
+                expected_solar_input = sum(
+                    min(-slot.net_load_kwh, battery.max_input_w * slot.hours / 1000)
+                    for slot in slots if slot.net_load_kwh < 0
+                )
+                if not has_solar_data:
+                    # An untimed estimate cannot tell us which load solar will
+                    # cover. It can still tell us to leave more room in the battery.
+                    daily_solar_kwh = sum(
+                        max(0.0, _to_float(getattr(forecast, key, None), 0.0))
+                        for key in ("remaining_today_kwh", "tomorrow_kwh")
+                    )
+                    expected_solar_input = max(expected_solar_input, daily_solar_kwh)
+                budget = summer_grid_charge_budget_kwh(
+                    capacity_kwh=capacity_kwh, soc_pct=soc_pct, maximum_soc_pct=maximum_soc_pct,
+                    extra_buffer_pct=extra_buffer_pct, expected_solar_input_kwh=expected_solar_input,
+                    round_trip_efficiency=battery.round_trip_efficiency,
+                )
+                planned_batteries.append(replace(
+                    battery, allow_grid_charge=dispatch_active,
+                    grid_charge_budget_kwh=budget,
+                    max_grid_purchase_price=None if has_solar_data else 0.0,
+                ))
+                summer_grid_charge.append({
+                    "name": str(snapshots[battery.device_id]["name"]),
+                    "forecast_surplus_kwh": round(expected_solar_input, 3),
+                    "extra_buffer_pct": extra_buffer_pct,
+                    "grid_budget_kwh": round(budget, 3),
+                })
             schedule = await self.hass.async_add_executor_job(partial(
-                plan_split_economic_dispatch, slots,
-                [replace(battery, allow_grid_charge=(
-                    battery.allow_grid_charge and dispatch_active
-                )) for battery in batteries],
+                plan_split_economic_dispatch, slots, planned_batteries,
                 max_input_w=max_input_w, max_output_w=max_output_w, export_price=export_price,
             ))
         else:
@@ -1305,6 +1350,8 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "top_up_kwh": round(schedule.grid_top_up_kwh, 3) if dispatch_active else None,
             "horizon_end": slots[-1].end.isoformat(),
         }
+        if summer_grid_charge:
+            summary["summer_grid_charge"] = summer_grid_charge
         for field, devices_field in (
             ("grid_charge_kwh", "grid_charge_by_device"), ("discharge_kwh", "discharge_by_device"),
         ):
