@@ -353,6 +353,17 @@ async def _async_setup_entry_once(hass: HomeAssistant, entry: ConfigEntry) -> bo
         handoff.discard_if_same(entry.entry_id, handed_off_recorder)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.native_zendure.start()
+
+    # Config-entry unload is not guaranteed during whole-core shutdown.
+    # Stop external MQTT threads while Home Assistant's loop is still alive.
+    if hasattr(hass, "bus") and hasattr(entry, "async_on_unload"):
+        async def _stop_native_on_shutdown(_event):
+            await coordinator.native_zendure.async_stop()
+
+        entry.async_on_unload(
+            hass.bus.async_listen_once("homeassistant_stop", _stop_native_on_shutdown)
+        )
+
     start_grid_event_refresh = getattr(
         coordinator, "async_start_grid_event_refresh", None
     )

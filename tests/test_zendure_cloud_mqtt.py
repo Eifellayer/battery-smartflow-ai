@@ -161,6 +161,56 @@ class CloudMqttTransportTests(unittest.IsolatedAsyncioTestCase):
         await transport.async_stop()
         self.assertTrue(self.sessions[0].disconnected)
 
+    async def test_callbacks_after_stop_are_ignored(self):
+        transport = ZendureCloudMqttTransport(self.data, session_factory=self.factory)
+        await transport.async_start()
+        session = self.sessions[0]
+        # Queue a packet immediately before stopping; it must not be delivered.
+        session.emit("/product-a/main-1/properties/report", b"{}")
+        await transport.async_stop()
+        session.drop()
+        session.emit("/product-a/main-1/properties/report", b"{}")
+        await asyncio.sleep(0)
+        self.assertEqual(transport.state, ConnectionState.STOPPED)
+        self.assertEqual(len(transport.messages), 0)
+        self.assertIsNone(transport._loop)
+
+    async def test_callbacks_from_retired_session_are_ignored(self):
+        transport = ZendureCloudMqttTransport(self.data, session_factory=self.factory)
+        await transport.async_start()
+        old = self.sessions[0]
+        await transport.async_stop()
+        await transport.async_start()
+        old.drop()
+        old.emit("/product-a/main-1/properties/report", b"{}")
+        await asyncio.sleep(0)
+        self.assertEqual(transport.state, ConnectionState.CONNECTED)
+        self.assertEqual(len(transport.messages), 0)
+        await transport.async_stop()
+
+    def test_closed_loop_and_close_race_do_not_raise_in_paho_thread(self):
+        transport = ZendureCloudMqttTransport(self.data)
+        loop = asyncio.new_event_loop()
+        loop.close()
+        transport._loop = loop
+        calls = []
+        transport._threadsafe(calls.append, "unexpected")
+        self.assertEqual(calls, [])
+
+        class ClosingLoop:
+            closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def call_soon_threadsafe(self, callback):
+                self.closed = True
+                raise RuntimeError("Event loop is closed")
+
+        transport._loop = ClosingLoop()
+        transport._threadsafe(calls.append, "unexpected")
+        self.assertEqual(calls, [])
+
     async def test_wildcard_rejection_falls_back_to_device_topics(self):
         sessions = []
         transport = ZendureCloudMqttTransport(

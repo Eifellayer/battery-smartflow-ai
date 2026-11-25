@@ -370,21 +370,24 @@ class ZendureCloudMqttTransport:
         self._connected.clear()
         self._connect_failure = None
         self._state = ConnectionState.CONNECTING
-        await self._open_session()
         try:
+            await self._open_session()
             await asyncio.wait_for(self._connected.wait(), timeout=timeout)
+            if self._connect_failure is not None:
+                raise CloudMqttError(self._connect_failure)
         except TimeoutError:
             await self.async_stop()
             raise CloudMqttError("connection_timeout") from None
-        if self._connect_failure is not None:
-            reason = self._connect_failure
+        except (Exception, asyncio.CancelledError):
             await self.async_stop()
-            raise CloudMqttError(reason)
+            raise
 
     async def async_stop(self) -> None:
         """Stop reconnects and disconnect the read-only subscriber."""
 
         self._stopping = True
+        # Invalidate the bridge before disconnecting the Paho network thread.
+        self._loop = None
         timeout_tasks = tuple(self._command_timeout_tasks)
         self._command_timeout_tasks.clear()
         for timeout_task in timeout_tasks:
@@ -442,17 +445,54 @@ class ZendureCloudMqttTransport:
     async def _open_session(self) -> None:
         self._session_number += 1
         session = self._session_factory(self._bootstrap.mqtt)
-        session.set_callbacks(self._on_connect, self._on_disconnect, self._on_message)
+        # Bind callbacks to their originating session, not a replacement.
+        session.set_callbacks(
+            lambda ok, reason: self._threadsafe(
+                self._handle_connect, ok, reason, session=session
+            ),
+            lambda reason: self._threadsafe(
+                self._handle_disconnect, reason, session=session
+            ),
+            lambda topic, payload, retained=False: self._threadsafe(
+                self._handle_message, topic, bytes(payload), retained, session=session
+            ),
+        )
         self._session = session
         self._command_adapter = None
         # The production backend starts Paho's non-blocking network loop here.
         # A custom backend may still perform blocking setup, so retain the
         # thread boundary to protect Home Assistant's event loop.
-        await asyncio.to_thread(session.connect)
+        # Cancelling to_thread does not stop its worker. Wait for startup
+        # before the caller disconnects, so it cannot start Paho after cleanup.
+        worker = asyncio.create_task(asyncio.to_thread(session.connect))
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await asyncio.gather(worker, return_exceptions=True)
+            raise
 
-    def _threadsafe(self, callback: Callable[..., None], *args: Any) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(callback, *args)
+    def _threadsafe(
+        self, callback: Callable[..., None], *args: Any,
+        session: CloudMqttSession | None = None,
+    ) -> None:
+        """Deliver Paho callbacks only to the current, live HA event loop."""
+        loop = self._loop
+        if self._stopping or loop is None or loop.is_closed():
+            return
+
+        def deliver() -> None:
+            if self._stopping or self._loop is not loop:
+                return
+            if session is not None and self._session is not session:
+                return
+            callback(*args)
+
+        try:
+            loop.call_soon_threadsafe(deliver)
+        except RuntimeError:
+            # The loop can close between is_closed() and scheduling.
+            if not loop.is_closed():
+                raise
 
     def _on_connect(self, successful: bool, reason: str | None) -> None:
         self._threadsafe(self._handle_connect, successful, reason)
@@ -570,6 +610,8 @@ class ZendureCloudMqttTransport:
             if self._stopping:
                 return
             await asyncio.sleep(delay + random.uniform(0, min(0.25, delay / 4)))
+            if self._stopping:
+                return
             self._connected.clear()
             self._connect_failure = None
             old, self._session = self._session, None
