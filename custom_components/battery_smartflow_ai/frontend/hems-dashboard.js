@@ -102,8 +102,10 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const viewButton = nodeFor("[data-view]");
       if (viewButton) {
         this._view = viewButton.dataset.view;
-        this.shadowRoot.querySelectorAll("[data-view]").forEach((tab) => {
-          tab.classList.toggle("active", tab.dataset.view === this._view);
+        this.shadowRoot.querySelectorAll(".portal-nav [data-view]").forEach((tab) => {
+          const selected = tab.dataset.view === this._view;
+          tab.classList.toggle("active", selected);
+          tab.setAttribute("aria-current", selected ? "page" : "false");
         });
         this._scheduleRender();
         return;
@@ -521,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.70";
+    const version = this._panel?.config?.dashboard_version || "1.0.71";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1040,6 +1042,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const showForecast = forecastSources.length > 0 || forecastStatus === "available";
     return `
       ${this._livePowerView(entities)}
+      ${this._pricePreview()}
       <section class="section"><div class="section-head"><h2>${this._escape(this._t("flows_today"))}</h2><small>${this._escape(this._t("daily_energy_note"))}</small></div>
         <small class="flow-scale">${this._escape(this._t("relative_flow_scale"))}</small><div class="flow-grid">
           ${flowRows}
@@ -1223,6 +1226,8 @@ class BatterySmartFlowDashboard extends HTMLElement {
         }
       } else if (lowPrice) {
         summary = this._t("health_price_below_threshold");
+      } else if (["economic_schedule_hold", "economic_planning_charge", "economic_price_discharge"].includes(reason?.state)) {
+        summary = this._t(`health_${reason.state}`);
       } else if (mode?.state === "standby" && ["idle", "standby", "state_idle"].includes(reason?.state)) {
         summary = this._t("health_standby");
       } else {
@@ -1261,7 +1266,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       if (direction === "charge" && Number.isFinite(plan.energy_kwh) && plan.energy_kwh > 0) {
         details.push(`${plan.energy_kwh.toLocaleString(locale, { maximumFractionDigits: 2 })} kWh`);
       }
-      if (direction === "discharge" && Number.isFinite(plan.price) && priceUnit) {
+      if (Number.isFinite(plan.price) && priceUnit) {
         details.push(`${plan.price.toLocaleString(locale, { maximumFractionDigits: 4 })} ${priceUnit}`);
       }
       return `<article><small>${this._escape(this._t(`plan_next_${direction}`))}</small>
@@ -1273,6 +1278,85 @@ class BatterySmartFlowDashboard extends HTMLElement {
       ${row("charge", charge, nextAction.state === "charging_active")}
       ${row("discharge", discharge, nextAction.state === "discharging_active")}
     </div>`;
+  }
+
+  _pricePreview() {
+    const t = (key) => this._escape(this._t(key));
+    const format = new Intl.DateTimeFormat(this._hass?.locale?.language, {
+      weekday: "short", hour: "2-digit", minute: "2-digit",
+      timeZone: this._hass?.config?.time_zone || undefined,
+    });
+    const time = (stamp) => format.format(new Date(stamp));
+    const messages = this._regulationMessages();
+    const previews = messages.map(({ title, nextAction }) => {
+      const { price_forecast: preview, charge, discharge } = nextAction?.attributes || {};
+      const periods = (preview?.periods || []).filter(({ start, end, price }) =>
+        Number.isFinite(price) && Number.isFinite(Date.parse(start)) && Date.parse(end) > Date.parse(start));
+      const unit = preview?.unit || "";
+      const value = (price) => `${price.toLocaleString(this._hass?.locale?.language, { maximumFractionDigits: 4 })} ${unit}`.trim();
+      const heading = messages.length > 1 ? `<h3>${this._escape(title)}</h3>` : "";
+      const current = Number.isFinite(preview?.current_price)
+        ? `<p>${t("price_preview_current")} <strong>${this._escape(value(preview.current_price))}</strong></p>` : "";
+      if (!periods.length) return `${heading}${current}<p>${t("price_preview_missing")}</p>`;
+      const low = periods.reduce((best, point) => point.price < best.price ? point : best);
+      const high = periods.reduce((best, point) => point.price > best.price ? point : best);
+      const overlaps = (start, end, plan) => start < Date.parse(plan?.end) && end > Date.parse(plan?.start);
+      const rows = periods.map(({ start, end, price }) => {
+        const startMs = Date.parse(start);
+        const endMs = Date.parse(end);
+        const actions = [[charge, "charge"], [discharge, "discharge"]]
+          .filter(([plan]) => overlaps(startMs, endMs, plan))
+          .map(([, action]) => `<span class="preview-action ${action}">${t(action)}</span>`).join(" ");
+        const relative = high.price === low.price ? 50 : Math.round(100 * (price - low.price) / (high.price - low.price));
+        return `<tr><th scope="row">${this._escape(time(startMs))} – ${this._escape(time(endMs))}</th>
+          <td><span>${this._escape(value(price))}</span><span class="price-preview-bar" aria-hidden="true"><i style="width:${Math.max(3, relative)}%"></i></span></td>
+          <td>${actions || "–"}</td></tr>`;
+      });
+      return `${heading}${current}<div class="health-grid price-preview-stats">
+        <article><small>${t("price_preview_low")}</small><strong>${this._escape(value(low.price))}</strong><small>${this._escape(time(low.start))}</small></article>
+        <article><small>${t("price_preview_high")}</small><strong>${this._escape(value(high.price))}</strong><small>${this._escape(time(high.start))}</small></article>
+      </div><div class="price-preview-table" tabindex="0" role="region" aria-label="${t("price_preview")}">
+        <table><thead><tr><th scope="col">${t("price_preview_period")}</th><th scope="col">${t("price_preview_import")}</th>
+        <th scope="col">${t("price_preview_plan")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+      </div>`;
+    }).join("");
+    return `<section class="section price-preview"><div class="section-head"><h2>${t("price_preview")}</h2></div>
+      ${previews || `<p>${t("price_preview_missing")}</p>`}</section>`;
+  }
+
+  _energyBudget(nextAction) {
+    const plan = nextAction?.attributes?.economics;
+    if (!plan) return "";
+    const locale = this._hass?.locale?.language;
+    const metrics = [
+      ["reserved_kwh", "cost_reserved"],
+      ["available_kwh", "cost_available"],
+      ["top_up_kwh", "cost_top_up"],
+    ].filter(([key]) => Number.isFinite(plan[key])).map(([key, label]) =>
+      `<div><dt>${this._escape(this._t(label))}</dt><dd>${this._escape(
+        plan[key].toLocaleString(locale, { maximumFractionDigits: 2 })
+      )} kWh</dd></div>`);
+    return `<div class="energy-budget"><h4>${this._escape(this._t("cost_plan"))}</h4>
+      <p>${this._escape(this._t(`cost_${plan.status}`))}</p>
+      ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}
+    </div>`;
+  }
+
+  _portalNavigation() {
+    const links = [
+      ["overview", "overview"],
+      ["groups", "systems_groups"],
+      ["energy", "energy"],
+      ["economics", "economics"],
+      ["controls", "controls"],
+      ["settings", "menu_settings"],
+    ];
+    const buttons = links.map(([view, label]) => {
+      const selected = this._view === view;
+      return `<button type="button" class="tab ${selected ? "active" : ""}" data-view="${view}"
+        aria-current="${selected ? "page" : "false"}">${this._escape(this._t(label))}</button>`;
+    });
+    return `<nav class="portal-nav" aria-label="${this._escape(this._t("dashboard_views"))}">${buttons.join("")}</nav>`;
   }
 
   _healthSummary(systems, entities) {
@@ -1305,12 +1389,14 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const messages = this._regulationMessages();
     const needsAttention = warnings.length > 0 || messages.some((message) => message.blocked);
     if (!systems.length && !messages.length) return "";
-    const warningList = warnings.length ? `<ul>${warnings.map((warning) =>
+    const warningList = warnings.length ? `<ul class="health-warnings">${warnings.map((warning) =>
       `<li>${this._escape(warning)}</li>`).join("")}</ul>` : "";
     const details = `${messages.map(({ title, summary, values, nextAction, priceUnit }) => `<article class="regulation-message">
-        <strong>${this._escape(title)}</strong><p>${this._escape(summary)}</p>
-        ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}
+        <div class="regulation-now"><h3>${this._escape(title)}</h3><p>${this._escape(summary)}</p>
+        ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}</div>
         ${this._operationPlan(nextAction, priceUnit)}
+        ${this._energyBudget(nextAction)}
+        <button type="button" class="tab price-preview-link" data-view="energy">${this._escape(this._t("price_preview"))}</button>
       </article>`).join("")}`;
     return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div>${warningList}${details}<div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div></section>`;
   }
@@ -3304,7 +3390,39 @@ class BatterySmartFlowDashboard extends HTMLElement {
         .dashboard-area{margin-top:22px;padding:20px;border-color:var(--area-border);border-left:4px solid var(--area-accent);background:linear-gradient(135deg,var(--area-tint),#1b1e21 58%)}.settings-area{--area-accent:#35bddc;--area-border:#2c6174;--area-tint:#1a2930}.debug-area{--area-accent:#f0c34e;--area-border:#655634;--area-tint:#29261e}.training-area{--area-accent:#56cf83;--area-border:#315b43;--area-tint:#1b2921}.dashboard-area .section-head{justify-content:flex-start;align-items:flex-start;padding-bottom:13px;border-bottom:1px solid var(--area-border)}.dashboard-area .section-head h2{font-size:18px}.dashboard-area .section-head small{display:block;margin-top:6px;line-height:1.45}.dashboard-entry-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}.dashboard-entry-card{min-width:0;padding:15px;border:1px solid #41464b;border-radius:10px;background:#24292d}.settings-entry{border-top:2px solid #35bddc}.debug-entry{border-top:2px solid #f0c34e}.dashboard-entry-title{margin:0 0 10px;color:#e7e9eb;font-size:14px}.settings-actions{display:flex;flex-wrap:wrap;gap:8px}.settings-actions .apply{align-self:auto}.dashboard-entry-card select{width:100%;min-width:0;background:#171a1d;color:#eef0f1;border:1px solid #4b535a;border-radius:7px;padding:10px;font:inherit}.debug-duration{display:grid;gap:6px}.debug-entry .apply{margin-top:8px}.training-entry-card{gap:12px;border-top:2px solid #56cf83}.training-status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr));gap:8px}.training-status-grid>div{display:flex;flex-direction:column;gap:6px;min-width:0;padding:10px 12px;border:1px solid #3a4540;border-radius:8px;background:#202722}.training-status-grid small{color:var(--muted);font-size:11px}.training-status-grid strong{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.training-controls{padding-top:12px;border-top:1px solid #3a4540}.training-control-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}.training-control-grid>div{display:grid;gap:6px}.training-control-grid select{width:100%;min-width:0;background:#171a1d;color:#eef0f1;border:1px solid #4b535a;border-radius:7px;padding:10px;font:inherit}.training-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}.settings-notice{padding:10px 14px;border:1px solid #3f6578;border-radius:8px;background:#1e3440;color:#dff8ff}.option-editor{max-width:100%}.option-editor-body{display:grid;gap:10px}.option-editor .apply{margin-top:10px}.option-field{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:10px 0;padding:10px;border:1px solid #343a40;border-radius:7px;background:#24282c}.option-field input[type=checkbox]{width:24px;height:24px}.option-field input:not([type=checkbox]),.option-field select{max-width:55%}.option-editor .apply[data-options-next]{display:block;width:100%;text-align:left;align-self:stretch}
         .metric-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px}.metric-group{padding:13px;border:1px solid #343a40;border-radius:11px;background:#202428}.metric-group h3{font-size:13px;color:#c7cbd0;margin:0 0 10px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px}.metric-grid .metric{min-height:108px;padding:15px}.metric-grid .metric:nth-child(2){border-top-color:var(--green)}.metric-grid .metric:nth-child(3){border-top-color:var(--amber)}
         .systems{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px}.system-card{min-width:0;position:relative;padding:17px;background:#172b3a;border:1px solid #2476a8;border-left:4px solid var(--cyan);border-radius:11px}.system-head,.pack-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.system-head>div:first-child,.pack-head>div:first-child{min-width:0;overflow-wrap:anywhere}.system-head strong,.pack-head strong{font-size:16px}.system-head small,.pack-head small,.device-meta{display:block;color:#b7c4ce;margin-top:6px}.system-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}.status{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:5px 9px;font-size:11px;white-space:nowrap}.status.offline{border-color:#744849;background:#3a2526;color:#f2aaaa}.packs{margin:15px 0 0 14px;padding-left:16px;border-left:1px solid #388ebc;display:grid;gap:9px}.pack-card{min-width:0;position:relative;padding:12px;background:#202b35;border:1px solid #475563;border-radius:9px}.pack-card.has-soc{background:#202b35}.pack-card.has-soc::before{content:"";position:absolute;z-index:0;inset:4px;box-sizing:border-box;background:var(--soc-fill);border:1px solid var(--soc-border);border-radius:5px;clip-path:inset(0 calc(100% - var(--soc-level)) 0 0 round 5px);pointer-events:none}.pack-card.has-soc::after{content:"";position:absolute;z-index:0;inset:5px;border-radius:4px;clip-path:inset(0 calc(100% - var(--soc-level)) 0 0 round 4px);pointer-events:none;opacity:0;background-image:radial-gradient(circle,transparent 43%,rgba(255,255,255,.58) 49%,rgba(255,255,255,.12) 57%,transparent 64%),radial-gradient(circle,transparent 43%,rgba(255,255,255,.4) 49%,rgba(255,255,255,.1) 57%,transparent 64%);background-size:30px 24px,42px 34px;background-position:0 0,10px 7px}.pack-card.has-soc[data-flow="charge"]::after{opacity:.7;animation:bubbles-right 3s linear infinite}.pack-card.has-soc[data-flow="discharge"]::after{opacity:.7;animation:bubbles-left 3s linear infinite}.pack-head{position:relative;z-index:1}@keyframes bubbles-right{from{background-position:0 0,10px 7px}to{background-position:120px 0,178px 7px}}@keyframes bubbles-left{from{background-position:120px 0,178px 7px}to{background-position:0 0,10px 7px}}@media(prefers-reduced-motion:reduce){.pack-card.has-soc[data-flow]::after{animation:none;opacity:.35}}.pack-card[data-soc-band="low"]{--soc-fill:rgba(240,118,91,.28);--soc-border:rgba(196,72,48,.85)}.pack-card[data-soc-band="medium"]{--soc-fill:rgba(240,195,78,.24);--soc-border:rgba(178,132,25,.85)}.pack-card[data-soc-band="high"]{--soc-fill:rgba(86,207,131,.24);--soc-border:rgba(37,145,77,.85)}.pack-card strong{display:block}.pack-card small{display:block;color:#aeb8c1;margin-top:5px}.details-toggle{border:1px solid #3f6578;background:#1a3442;color:#d9f5fb;border-radius:7px;padding:6px 9px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.details-toggle:hover,.details-toggle:focus-visible{border-color:var(--cyan);outline:2px solid var(--cyan);outline-offset:2px}.hover-details{display:none;position:absolute;z-index:5;left:12px;top:calc(100% + 9px);width:min(380px,calc(100vw - 56px));padding:14px;background:#f7f8fa;color:#20242a;border:1px solid #d7dce2;border-radius:10px;box-shadow:0 12px 35px #0008}.system-card.details-open>.hover-details,.pack-card.details-open>.hover-details{display:block}@media(hover:hover){.system-card:hover:not(:has(.pack-card:hover))>.hover-details,.pack-card:hover>.hover-details{display:block}}.hover-details h3{margin:0 0 9px;font-size:14px}.detail-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #e5e7eb;font-size:12px}.detail-row span{color:#59616a}.detail-row strong{text-align:right;overflow-wrap:anywhere}.empty{color:var(--muted);padding:18px;border:1px dashed #485058;border-radius:10px}.inventory{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px}.entity{min-width:0;display:flex;justify-content:space-between;gap:12px;padding:11px 12px;border-bottom:1px solid #34383d}.entity span{color:#c2c6ca;overflow-wrap:anywhere}.entity strong{font-weight:550;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.signal-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px}.signal-entity{display:grid;grid-template-columns:minmax(0,1fr) minmax(5rem,auto);align-items:start}.signal-value{max-width:45%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.footer{color:#858c92;font-size:12px;margin:16px 2px}
-        .health-summary{border-left:4px solid var(--green)}.health-summary.attention{border-left-color:var(--amber)}.health-state{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:6px 10px;font-size:12px;white-space:nowrap}.health-summary.attention .health-state{border-color:#78633b;background:#3a3120;color:#f4d78b}.health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.health-grid article{display:flex;flex-direction:column;gap:7px;padding:12px 14px;background:#25292d;border:1px solid #3a3f44;border-radius:9px}.health-grid small{color:var(--muted)}.health-grid strong{font-size:18px;font-variant-numeric:tabular-nums}
+        .portal-nav{display:flex;flex-wrap:wrap;gap:5px;padding:6px;border:1px solid var(--line);border-radius:12px;background:#191d21}
+        .portal-nav .tab{border-color:transparent;background:transparent;border-radius:8px;min-height:40px}
+        .portal-nav .tab:hover{background:#252b31}.portal-nav .tab.active{background:#243843;border-color:#42687c;color:#f0f9fc}
+        .price-preview-link{width:max-content;max-width:100%}
+        .price-preview-stats{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:12px}
+        .price-preview-table{max-height:24rem;overflow:auto;border:1px solid var(--line);border-radius:10px}
+        .price-preview-table table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+        .price-preview-table thead{position:sticky;top:0;background:#20272c}
+        .price-preview-table th,.price-preview-table td{padding:10px;text-align:left;border-bottom:1px solid var(--line)}
+        .price-preview-table tbody th{font-weight:500}
+        .price-preview-bar{display:block;height:4px;min-width:40px;margin-top:4px;border-radius:5px;background:#263840}
+        .price-preview-bar i{display:block;height:100%;border-radius:inherit;background:#6da5bb}
+        .preview-action{display:inline-block;padding:3px 7px;margin:1px;border-radius:5px;background:#243843;color:#e1f4fb}
+        .preview-action.discharge{background:#254135;color:#d6f4e3}
+        .health-summary{padding:clamp(15px,2.5vw,26px);background:#1a2024}
+        .health-summary>.section-head{margin-bottom:14px;flex-wrap:wrap}
+        .health-state{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:6px 10px;font-size:12px}
+        .health-summary.attention .health-state{border-color:#78633b;background:#3a3120;color:#f4d78b}
+        .health-warnings{margin:0 0 16px;padding:10px 14px 10px 32px;border:1px solid #6e5534;border-radius:9px;background:#322a1c;color:#f4d78b;line-height:1.5}
+        .regulation-message{display:grid;gap:12px;margin:0 0 16px}
+        .regulation-now{padding:15px 17px;border:1px solid #394b56;border-radius:10px;background:#222d34}
+        .regulation-now h3,.energy-budget h4{font-size:13px;margin:0 0 5px;color:#b8ccd7}
+        .regulation-now p{font-size:17px;font-weight:550;line-height:1.4;margin:0}
+        .regulation-now small{color:#bbc5cc;display:block;margin-top:6px}
+        .health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+        .health-grid article{display:grid;align-content:start;gap:5px;min-width:0;padding:11px 13px;background:#242a2e;border:1px solid #3a434a;border-radius:9px}
+        .health-grid small{color:#b8c1c8;line-height:1.4}.health-grid strong{font-size:16px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+        .health-grid.operation-plan{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .operation-plan article{border-top:2px solid #638575}.operation-plan article+article{border-top-color:#758fac}
+        .energy-budget{padding:13px 16px;border:1px solid #414a51;border-radius:10px}
+        .energy-budget p{margin:0;color:#c3cdd4;line-height:1.45}.energy-budget dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,135px),1fr));gap:10px;margin:10px 0 0}
+        .energy-budget dt{font-size:12px;color:#b8c1c8}.energy-budget dd{margin:3px 0 0;font-size:18px;font-variant-numeric:tabular-nums}
+        @media(max-width:520px){.health-grid.operation-plan{grid-template-columns:1fr}.portal-nav .tab{padding-inline:10px}}
         @media(max-width:900px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.topology{grid-template-columns:1fr}.link{height:20px;width:1px;margin:auto}}@media(max-width:520px){header{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr 1fr}.systems{grid-template-columns:1fr}.health-grid{grid-template-columns:1fr}.section-head{align-items:flex-start;flex-direction:column}.forecast-source-hint{max-width:100%;text-align:left}.hover-details{position:static;width:auto;max-width:100%;margin-top:12px;box-shadow:none}.system-card.details-open>.hover-details,.pack-card.details-open>.hover-details{display:block}.metric{padding:13px}.section{padding:15px}}@media(max-width:360px){nav{gap:5px;overflow-x:auto}.tab{flex:0 0 auto;padding:8px 10px}.metrics{grid-template-columns:1fr}.health-grid{gap:7px}}
         .flow-grid{display:grid;gap:9px;margin-top:10px}.flow-row{display:grid;grid-template-columns:minmax(85px,.8fr) minmax(110px,1.6fr) minmax(85px,.8fr) minmax(80px,.6fr);gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.flow-node{min-width:0;padding:9px 11px;border:1px solid #41464b;border-radius:9px;background:#272b2f}.flow-node small{display:block;color:var(--muted);font-size:10px}.flow-node strong{display:block;margin-top:3px;font-size:13px}.flow-route{min-width:0;display:flex;flex-direction:column;gap:5px}.flow-label{color:#c3c7ca;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.flow-direction{display:flex;align-items:center;gap:8px;color:var(--cyan)}.flow-direction>span{font-size:20px;line-height:1}.flow-track{height:8px;flex:1;background:#30353a;border-radius:999px;overflow:hidden}.flow-track i{display:block;height:100%;background:linear-gradient(90deg,#1bb7df,#54d08a);border-radius:999px}.flow-route.unavailable .flow-track{background:repeating-linear-gradient(135deg,#363b40,#363b40 4px,#25292d 4px,#25292d 8px)}.flow-route.unavailable .flow-track i{display:none}.flow-value{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.flow-scale{color:var(--muted)}
         @media(max-width:520px){.flow-row{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr) minmax(0,.7fr);gap:6px}.flow-node{padding:8px 7px}.flow-node strong{font-size:12px;overflow-wrap:anywhere}.flow-label{font-size:10px}.flow-direction{gap:4px}.flow-direction>span{font-size:16px}.flow-value{font-size:12px}}@media(max-width:360px){.flow-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.flow-route{grid-column:1 / -1}.flow-value{grid-column:2;text-align:right}}
@@ -3366,7 +3484,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       <main class="shell">
         <header><div><p class="sub">${this._escape(this._t("subtitle"))}</p><small class="versionline">${this._escape(this._t("version"))} ${this._escape(this._panel?.config?.integration_version || "—")} · ${this._escape(this._t("dashboard_version"))} ${this._escape(this._panel?.config?.dashboard_version || "—")}</small><a class="home-link" href="/" data-home>← ${this._escape(this._t("home_assistant"))}</a></div><div class="badge">● ${this._escape(this._t("live"))} ${this._escape(updated)}</div></header>
         <section class="section"><div class="section-head"><h2>${this._escape(this._t("energy_overview"))}</h2><small>${this._escape(this._t("live_values"))}</small></div><div class="metric-groups">${cards}</div></section>
-        <nav aria-label="${this._escape(this._t("dashboard_views"))}"><button class="tab ${this._view === "overview" ? "active" : ""}" data-view="overview">${this._escape(this._t("overview"))}</button><button class="tab ${this._view === "energy" ? "active" : ""}" data-view="energy">${this._escape(this._t("energy"))}</button><button class="tab ${this._view === "economics" ? "active" : ""}" data-view="economics">${this._escape(this._t("economics"))}</button><button class="tab ${this._view === "groups" ? "active" : ""}" data-view="groups">${this._escape(this._t("systems_groups"))}</button><button class="tab ${this._view === "controls" ? "active" : ""}" data-view="controls">${this._escape(this._t("controls"))}</button><button class="tab ${this._view === "settings" ? "active" : ""}" data-view="settings">${this._escape(this._t("menu_settings"))}</button></nav>
+        ${this._portalNavigation()}
         ${this._optionsFlowEditor()}
         ${activeContent}
         <p class="footer">${this._escape(this._t("footer"))}</p>
