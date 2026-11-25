@@ -735,7 +735,7 @@ class ReserveChargeRule(BaseRule):
 
         # Grid charging must still be economically meaningful compared to the
         # upcoming high-price window. Feed-in tariff must not block this case.
-        min_profit_factor = 1.0 + (float(ctx.profit_margin_pct or 0.0) / 100.0)
+        min_profit_factor = engine._grid_charge_profit_factor(ctx)
         if float(price_now) * min_profit_factor > float(expected_peak_price):
             return None
             
@@ -1269,6 +1269,11 @@ class DecisionEngine:
                 and self._additional_battery_discharge_blocks_charge(ctx)
             ):
                 return "additional_battery_discharging_block"
+
+        if ctx.member_grid_charge_blocked and state in {
+            "ac_charge_learned", "ac_charge_planned", "ac_charge_price", "ac_charge_reserve",
+        }:
+            return "member_grid_charge_spread_not_met"
 
         if (
             ctx.economic_power_w is None
@@ -2457,6 +2462,11 @@ class DecisionEngine:
 
         return False
 
+    @staticmethod
+    def _grid_charge_profit_factor(ctx: DecisionContext) -> float:
+        spread = ctx.member_grid_charge_spread_pct
+        return 1 + float(ctx.profit_margin_pct if spread is None else spread) / 100
+
     def _evaluate_adaptive_planning(self, ctx: DecisionContext) -> Optional[DecisionResult]:
         if self._learned_planning_waits_for_window(ctx):
             return None
@@ -2496,7 +2506,7 @@ class DecisionEngine:
 
         expected_peak_price = max(p.price for p in future_peaks)
 
-        min_profit_factor = 1 + (ctx.profit_margin_pct / 100)
+        min_profit_factor = self._grid_charge_profit_factor(ctx)
         required_peak_price = price_now * min_profit_factor
 
         if expected_peak_price < required_peak_price:

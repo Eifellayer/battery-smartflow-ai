@@ -523,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.74";
+    const version = this._panel?.config?.dashboard_version || "1.0.75";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1330,12 +1330,16 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const overlaps = (start, end, windows) => windows.some(
         (window) => start < Date.parse(window?.end) && end > Date.parse(window?.start)
       );
+      const windowMembers = (start, end, windows) => [...new Set(windows
+        .filter((window) => overlaps(start, end, [window]))
+        .flatMap((window) => Array.isArray(window.members) ? window.members : []))].join(", ");
       const opportunity = discharge?.status === "price_opportunity";
       const dischargeLabel = opportunity ? "price_preview_discharge_possible" : "price_preview_discharge_planned";
       const chargeRanges = [], opportunityRanges = [], dischargeRanges = [];
-      const addRange = (ranges, start, end) => {
-        if (ranges.at(-1)?.end === start) ranges.at(-1).end = end;
-        else ranges.push({ start, end });
+      const addRange = (ranges, start, end, members = "") => {
+        const previous = ranges.at(-1);
+        if (previous?.end === start && previous.members === members) previous.end = end;
+        else ranges.push({ start, end, members });
       };
       const rows = periods.map(({ start, end, price, current }) => {
         const startMs = Date.parse(start);
@@ -1343,25 +1347,27 @@ class BatterySmartFlowDashboard extends HTMLElement {
         const inChargeWindow = overlaps(startMs, endMs, chargeWindows);
         const canCharge = !inChargeWindow && overlaps(startMs, endMs, chargeOpportunities);
         const inDischargeWindow = overlaps(startMs, endMs, dischargeWindows);
-        if (inChargeWindow) addRange(chargeRanges, startMs, endMs);
+        const chargeMembers = inChargeWindow ? windowMembers(startMs, endMs, chargeWindows) : "";
+        const dischargeMembers = inDischargeWindow ? windowMembers(startMs, endMs, dischargeWindows) : "";
+        if (inChargeWindow) addRange(chargeRanges, startMs, endMs, chargeMembers);
         if (canCharge) addRange(opportunityRanges, startMs, endMs);
-        if (inDischargeWindow) addRange(dischargeRanges, startMs, endMs);
+        if (inDischargeWindow) addRange(dischargeRanges, startMs, endMs, dischargeMembers);
         const actions = [
           current && liveCharge ? ["charge", liveCharge.label]
-            : inChargeWindow ? ["charge", "price_preview_charge_planned"]
+            : inChargeWindow ? ["charge", "price_preview_charge_planned", chargeMembers]
             : canCharge && ["charge opportunity", "price_preview_charge_possible"],
           current && liveDischarge
             ? ["discharge", liveDischarge.label]
-            : inDischargeWindow && [`discharge${opportunity ? " opportunity" : ""}`, dischargeLabel],
-        ].filter(Boolean).map(([kind, label]) => `<span class="preview-action ${kind}">${t(label)}</span>`).join(" ");
+            : inDischargeWindow && [`discharge${opportunity ? " opportunity" : ""}`, dischargeLabel, dischargeMembers],
+        ].filter(Boolean).map(([kind, label, members]) => `<span class="preview-action ${kind}">${t(label)}${members ? ` · ${this._escape(members)}` : ""}</span>`).join(" ");
         const relative = high.price === low.price ? 50 : Math.round(100 * (price - low.price) / (high.price - low.price));
         return `<tr><th scope="row">${this._escape(time(startMs))} – ${this._escape(time(endMs))}</th>
           <td><span>${this._escape(value(price))}</span><span class="price-preview-bar" aria-hidden="true"><i style="width:${Math.max(3, relative)}%"></i></span></td>
           <td>${actions || "–"}</td></tr>`;
       });
       const windowSummary = (title, ranges, help) => {
-        const times = ranges.slice(0, 3).map(({ start, end }) =>
-          `<li>${this._escape(time(start))} – ${this._escape(time(end))}</li>`).join("");
+        const times = ranges.slice(0, 3).map(({ start, end, members }) =>
+          `<li>${this._escape(time(start))} – ${this._escape(time(end))}${members ? ` · ${this._escape(members)}` : ""}</li>`).join("");
         return times || help
           ? `<section class="price-preview-ranges"><h3>${t(title)}</h3>
             ${times ? `<ul>${times}</ul>` : ""}${help ? `<p>${t(help)}</p>` : ""}</section>`

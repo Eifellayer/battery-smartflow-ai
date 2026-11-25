@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 
 from homeassistant.components.number import NumberEntity, NumberEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -9,6 +11,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    CONF_BATTERY_GROUPS,
+    CONF_NATIVE_ZENDURE_DEVICE_SETUPS,
+    CONF_NATIVE_ZENDURE_SELECTED_DEVICE,
     DOMAIN,
     INTEGRATION_MANUFACTURER,
     INTEGRATION_MODEL,
@@ -41,7 +46,7 @@ from .const import (
     SETTING_FORECAST_BASE_LOAD,
     DEFAULT_FORECAST_BASE_LOAD,
 )
-from .battery_groups import group_power_ceiling
+from .battery_groups import GROUP_OBJECTIVE_NEAR_ZERO, enabled_group_members, group_power_ceiling
 from .device_profiles import get_profile_config
 from .factor_display import (
     discount_pct_to_valley_factor,
@@ -50,6 +55,11 @@ from .factor_display import (
     valley_factor_to_discount_pct,
 )
 from .price_currency import price_input_profile
+from .group_grid_charging import (
+    MAX_GRID_CHARGE_SPREAD_PCT,
+    MEMBER_GRID_CHARGE_SPREADS,
+    member_grid_charge_policy,
+)
 
 
 PRICE_NUMBER_KEYS = frozenset(
@@ -285,6 +295,16 @@ async def async_setup_entry(
 
     add_entities(entities)
 
+    runtime = getattr(coordinator, "native_zendure", None)
+    members = enabled_group_members(
+        entry.options.get(CONF_BATTERY_GROUPS),
+        getattr(runtime, "selected_device_id", None) or entry.options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE),
+        objective=GROUP_OBJECTIVE_NEAR_ZERO,
+    )
+    if native and len(members) > 1:
+        policies = member_grid_charge_policy(entry.options, members, DEFAULT_PROFIT_MARGIN_PCT)
+        add_entities(MemberGridChargeSpread(entry, coordinator, device_id) for device_id in policies)
+
     for ent in entities:
         key = ent.entity_description.runtime_key
 
@@ -389,3 +409,44 @@ class ZendureSmartFlowNumber(NumberEntity):
         self.async_on_remove(
             self.coordinator.async_add_listener(self.async_write_ha_state)
         )
+
+
+class MemberGridChargeSpread(NumberEntity):
+    """Minimum tariff increase from grid purchase to avoided import."""
+
+    _attr_has_entity_name = True
+    _attr_native_min_value = 0
+    _attr_native_max_value = MAX_GRID_CHARGE_SPREAD_PCT
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "%"
+    _attr_mode = "box"
+    _attr_icon = "mdi:percent-outline"
+
+    def __init__(self, entry, coordinator, device_id: str) -> None:
+        self._entry = entry
+        self._coordinator = coordinator
+        self._device_id = device_id
+        setups = entry.options.get(CONF_NATIVE_ZENDURE_DEVICE_SETUPS) or {}
+        record = setups.get("devices", {}).get(device_id, {})
+        label = record.get("display_name") or record.get("model") or "Zendure"
+        digest = hashlib.sha256(device_id.encode()).hexdigest()[:12]
+        self._attr_name = f"Netzladen Mindest-Preisabstand – {label}"
+        self._attr_unique_id = f"{entry.entry_id}_grid_charge_spread_{digest}"
+        self._attr_device_info = {"identifiers": {(DOMAIN, entry.entry_id)}}
+
+    @property
+    def native_value(self) -> float:
+        default = self._coordinator.runtime_settings.get(SETTING_PROFIT_MARGIN_PCT, DEFAULT_PROFIT_MARGIN_PCT)
+        policies = member_grid_charge_policy(self._entry.options, (self._device_id,), default)
+        return policies.get(self._device_id, (default,))[0]
+
+    async def async_set_native_value(self, value: float) -> None:
+        value = min(self.native_max_value, max(self.native_min_value, float(value)))
+        options = self._entry.options
+        saved = options.get(MEMBER_GRID_CHARGE_SPREADS)
+        spreads = dict(saved) if isinstance(saved, Mapping) else {}
+        spreads[self._device_id] = value
+        self.hass.config_entries.async_update_entry(
+            self._entry, options={**options, MEMBER_GRID_CHARGE_SPREADS: spreads},
+        )
+        self.async_write_ha_state()

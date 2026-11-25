@@ -473,6 +473,7 @@
   "price_preview_opportunity_help": "Der Preis passt. Ob der Akku entlädt, entscheidet die Regelung im jeweiligen Zeitraum anhand von Hausverbrauch, Ladezustand und Schutzgrenzen.",
   "cost_active": "Aktiv. Die nächsten Lade- und Entladefenster werden aus Preisen, Hauslast und Solarprognose berechnet.",
   "cost_load_history_missing": "Vorschau mit Grundlast. Für die automatische Planung fehlen noch Verbrauchsdaten.",
+  "cost_active_partial_forecast": "Winterplanung mit den verfügbaren Verbrauchs- und Solardaten. Fehlende Verbrauchswerte werden anhand der Grundlast geschätzt.",
   "cost_solar_forecast_missing": "Vorschau. Für die automatische Planung fehlt eine zeitlich aufgelöste Solarprognose.",
   "cost_device_data_missing": "Die Kostenplanung wartet auf gültige Ladezustands- und Kapazitätsdaten aller Speicher.",
   "cost_measurement_missing": "Die Kostenplanung wartet auf die Netzmessung und die aktuelle PV-Leistung.",

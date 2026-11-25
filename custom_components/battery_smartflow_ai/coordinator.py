@@ -163,8 +163,9 @@ from .hardware.shelly_3em import (
     async_read_shelly_3em_power,
 )
 from .forecast import async_build_forecast_summary
-from .core.economic_schedule import plan_economic_dispatch
+from .core.economic_schedule import EconomicBattery, plan_economic_dispatch, plan_split_economic_dispatch
 from .economic_planning import economic_slots, import_price_preview
+from .group_grid_charging import eligible_grid_charge_members, member_grid_charge_policy
 from .learned_planning import (
     LearningSample,
     LearningChargePowerSample,
@@ -445,7 +446,8 @@ def _charge_price_opportunities(
 
 
 def _group_member_power_limits(
-    snapshot: Mapping[str, Any], intent_metadata: Any
+    snapshot: Mapping[str, Any], intent_metadata: Any, *,
+    member_limit_w: float | None = None, charging: bool = False,
 ) -> dict[str, float]:
     """Keep the member's own limits, including active controller protection."""
 
@@ -461,6 +463,9 @@ def _group_member_power_limits(
             limit = _to_float(intent_metadata.get(key))
             if limit is not None:
                 limits[field] = min(limits[field], max(0.0, limit))
+    if member_limit_w is not None:
+        field = "max_charge_w" if charging else "max_discharge_w"
+        limits[field] = min(limits[field], max(0.0, member_limit_w))
     return limits
 
 
@@ -1139,7 +1144,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _economic_group_plan(
         self, ctx, runtime, *, current_ac_input_w, load_model,
         learned_ready, forecast_base_load_w, selected_capacity_kwh,
-        current_net_load_w,
+        current_net_load_w, grid_charge_policy=None,
     ) -> tuple[dict[str, Any] | None, float | None]:
         """Plan Automatic near-zero dispatch and keep incomplete input in preview."""
 
@@ -1194,6 +1199,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return {"status": "device_data_missing"}, None
         capacity = stored = 0.0
         devices = []
+        batteries = []
         for device_id, item in snapshots.items():
             if (
                 not item["available"] or not item["configured"] or not item["supported"]
@@ -1227,6 +1233,14 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_charge_w=input_limit, max_discharge_w=float(item["max_discharge_w"]),
                 circuit_ids=tuple(circuits[device_id]),
             ))
+            if grid_charge_policy:
+                spread, efficiency, winter_only = grid_charge_policy[device_id]
+                batteries.append(EconomicBattery(
+                    device_id, device_capacity * (maximum - reserve) / 100.0,
+                    device_capacity * max(0.0, min(maximum, soc) - reserve) / 100.0,
+                    input_limit, float(item["max_discharge_w"]), efficiency, spread,
+                    ctx.season == "winter" or not winter_only,
+                ))
         charge_ceiling = limit_group_power(
             self.entry.options, SETTING_MAX_CHARGE, sum(device.max_charge_w for device in devices),
         )
@@ -1260,37 +1274,70 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else "active"
         )
         export = ctx.export_market_price
-        schedule = await self.hass.async_add_executor_job(partial(
-            plan_economic_dispatch, slots,
-            usable_capacity_kwh=capacity, stored_kwh=stored, max_input_w=max_input_w,
-            max_output_w=max_output_w,
-            export_price=export.current_price if export and export.valid else 0.0,
-            margin_pct=ctx.profit_margin_pct, allow_grid_charge=status == "active",
-        ))
+        export_price = export.current_price if export and export.valid else 0.0
+        # The winter price strategy can use the existing base-load estimate
+        # until the learned inputs are ready. Keep the same plan for charging
+        # and discharge so a cheap purchase stays reserved for its price peak.
+        split_fallback = bool(batteries and status != "active" and ctx.season == "winter")
+        dispatch_active = status == "active" or split_fallback
+        if batteries:
+            schedule = await self.hass.async_add_executor_job(partial(
+                plan_split_economic_dispatch, slots,
+                [replace(battery, allow_grid_charge=(
+                    battery.allow_grid_charge and dispatch_active
+                )) for battery in batteries],
+                max_input_w=max_input_w, max_output_w=max_output_w, export_price=export_price,
+            ))
+        else:
+            schedule = await self.hass.async_add_executor_job(partial(
+                plan_economic_dispatch, slots,
+                usable_capacity_kwh=capacity, stored_kwh=stored, max_input_w=max_input_w,
+                max_output_w=max_output_w, export_price=export_price,
+                margin_pct=ctx.profit_margin_pct, allow_grid_charge=status == "active",
+            ))
         if not schedule.dispatch:
             return {"status": "device_data_missing"}, None
         first = schedule.dispatch[0]
         summary = {
-            "status": status,
+            "status": "active_partial_forecast" if split_fallback else status,
             "reserved_kwh": round(schedule.stored_for_later_kwh, 3),
             "available_kwh": round(schedule.available_now_kwh, 3),
-            "top_up_kwh": round(schedule.grid_top_up_kwh, 3) if status == "active" else None,
+            "top_up_kwh": round(schedule.grid_top_up_kwh, 3) if dispatch_active else None,
             "horizon_end": slots[-1].end.isoformat(),
         }
-        for field in ("grid_charge_kwh", "discharge_kwh"):
-            windows = [
-                {
+        for field, devices_field in (
+            ("grid_charge_kwh", "grid_charge_by_device"), ("discharge_kwh", "discharge_by_device"),
+        ):
+            windows = []
+            for entry in schedule.dispatch:
+                energy = getattr(entry, field)
+                if energy < 0.005:
+                    continue
+                window = {
                     "start": entry.slot.start.isoformat(), "end": entry.slot.end.isoformat(),
-                    "price": entry.slot.price, "energy_kwh": round(getattr(entry, field), 3),
+                    "price": entry.slot.price, "energy_kwh": round(energy, 3),
                 }
-                for entry in schedule.dispatch if getattr(entry, field) >= 0.005
-            ]
+                if batteries:
+                    window["members"] = sorted(
+                        str(snapshots[key]["name"]) for key, kwh in getattr(entry, devices_field).items()
+                        if kwh >= 0.001
+                    )
+                windows.append(window)
             if windows:
-                summary[field] = {**windows[0], "windows": windows} if status == "active" else windows[0]
+                if dispatch_active:
+                    summary[field] = {**windows[0], "windows": windows}
+                else:
+                    summary[field] = windows[0]
         # Ignore sub-Wh targets. Avoid division by a nearly elapsed slot.
-        if status != "active" or first.slot.hours * 3600 < 10:
-            return summary, 0.0 if status == "active" else None
+        if not dispatch_active or first.slot.hours * 3600 < 10:
+            return summary, 0.0 if dispatch_active else None
         power_w = (first.grid_charge_kwh - first.discharge_kwh) * 1000 / first.slot.hours
+        if batteries:
+            member_energy = first.grid_charge_by_device if power_w > 0 else first.discharge_by_device
+            summary["_member_limits_w"] = {
+                device_id: energy * 1000 / first.slot.hours
+                for device_id, energy in member_energy.items()
+            }
         return summary, power_w
 
     def _group_feedback_sample(self, runtime, *, now, grid_age_s, grid_valid):
@@ -1665,6 +1712,11 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE and target_w < 0
             else grid_circuits_by_device
         )
+        member_limits = None
+        if isinstance(intent_metadata, Mapping) and intent_metadata.get("group_economic_direction") == (
+            "input" if target_w > 0 else "output"
+        ):
+            member_limits = intent_metadata.get("group_economic_member_limits_w")
         devices = tuple(
             ShadowDevice(
                 device_id=device_id,
@@ -1681,6 +1733,8 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **_group_member_power_limits(
                     snapshot_by_id[device_id],
                     intent_metadata if device_id == selected_id else None,
+                    member_limit_w=(member_limits.get(device_id, 0.0) if isinstance(member_limits, Mapping) else None),
+                    charging=target_w > 0,
                 ),
                 circuit_ids=tuple(device_circuits[device_id]),
             )
@@ -8028,6 +8082,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 power_limits_valid=bool(power_limits_valid),
             )
 
+            group_charge_members = enabled_group_members(
+                self.entry.options.get(CONF_BATTERY_GROUPS),
+                getattr(native_runtime, "selected_device_id", None),
+                objective=GROUP_OBJECTIVE_NEAR_ZERO,
+            )
+            grid_charge_policy = (
+                member_grid_charge_policy(self.entry.options, group_charge_members, ctx.profit_margin_pct)
+                if ai_mode == AI_MODE_AUTOMATIC and len(group_charge_members) > 1
+                and getattr(native_runtime, "control_enabled", False) else {}
+            )
+            eligible_grid_members = ()
+            if grid_charge_policy:
+                eligible_grid_members = eligible_grid_charge_members(
+                    grid_charge_policy, price_now, [p.price for p in price_points if p.start > now],
+                    winter=ctx.season == "winter",
+                )
+                ctx.member_grid_charge_blocked = not eligible_grid_members
+                ctx.member_grid_charge_spread_pct = min(
+                    (grid_charge_policy[key][0] for key in eligible_grid_members), default=None,
+                )
+
             economic_plan, ctx.economic_power_w = await self._economic_group_plan(
                 ctx, native_runtime,
                 current_ac_input_w=group_selected_max_input_w,
@@ -8036,9 +8111,17 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 forecast_base_load_w=forecast_base_load_w,
                 selected_capacity_kwh=battery_capacity_kwh,
                 current_net_load_w=house_load - pv_w,
+                grid_charge_policy=grid_charge_policy,
             )
+            planned_member_limits = economic_plan.pop("_member_limits_w", None) if economic_plan else None
+            if planned_member_limits and ctx.economic_power_w > 0:
+                # The split scheduler already checked every purchase against
+                # future local demand, including the price floor per battery.
+                ctx.member_grid_charge_blocked = False
             if ctx.economic_power_w is not None and self._persist.get("charge_commit_active"):
                 self._clear_charge_commit("economic_schedule")
+            elif ctx.member_grid_charge_blocked and self._charge_pricing_reason("charge_commit_active") in CHARGE_COMMIT_SOURCE_REASONS:
+                self._clear_charge_commit("member_grid_charge_spread_not_met")
 
             base_required_kwh = (
                 battery_capacity_kwh
@@ -9202,6 +9285,17 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pv_handover_policy=pv_handover_policy,
                 load_coverage_priority=load_coverage_priority,
             )
+            charge_reason = self._charge_pricing_reason(decision.reason)
+            if planned_member_limits is not None and decision.reason in {
+                "economic_planning_charge", "economic_price_discharge",
+            }:
+                strategy_intent.metadata["group_economic_direction"] = decision.ac_mode
+                strategy_intent.metadata["group_economic_member_limits_w"] = planned_member_limits
+            elif grid_charge_policy and charge_reason in CHARGE_COMMIT_SOURCE_REASONS:
+                strategy_intent.metadata["group_economic_direction"] = "input"
+                strategy_intent.metadata["group_economic_member_limits_w"] = {
+                    key: None for key in eligible_grid_members
+                }
 
             # Smooth Autarky output within the configured band above the actual
             # SoC minimum. Keep this taper separate from the resume hysteresis:
@@ -11645,7 +11739,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             price_preview = import_price_preview(now, import_market_price)
             price_preview["discharge_windows"] = discharge_plan.pop("windows", ())
-            economic_plan_active = bool(economic_plan and economic_plan["status"] == "active")
+            economic_plan_active = bool(economic_plan and economic_plan["status"] in {"active", "active_partial_forecast"})
             if ai_mode == AI_MODE_AUTOMATIC and not economic_plan_active and charge_plan["status"] != "charge_window":
                 price_preview["charge_opportunities"] = _charge_price_opportunities(
                     price_points, now, very_cheap_price, current_valley_threshold,
@@ -11665,7 +11759,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ))
             if economic_plan_active:
                 for direction, field in (
-                    ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh")
+                    ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh"),
                 ):
                     window = economic_plan.get(field)
                     price_preview[f"{direction}_windows"] = window.pop("windows", ()) if window else ()

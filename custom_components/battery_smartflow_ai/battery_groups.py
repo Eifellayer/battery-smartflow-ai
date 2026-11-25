@@ -260,7 +260,9 @@ def reconcile_group_config(value: Any = None) -> dict[str, Any]:
     return {"version": GROUPS_SCHEMA_VERSION, "groups": groups}
 
 
-def enabled_group_members(group_config: Any, selected_id: str | None) -> tuple[str, ...]:
+def enabled_group_members(
+    group_config: Any, selected_id: str | None, *, objective: str | None = None,
+) -> tuple[str, ...]:
     """Return members of the enabled group that owns the active controller."""
 
     try:
@@ -272,6 +274,7 @@ def enabled_group_members(group_config: Any, selected_id: str | None) -> tuple[s
             tuple(group["members"])
             for group in groups.values()
             if group["control_enabled"] and selected_id in group["members"]
+            and (objective is None or group["objective"] == objective)
         ),
         (),
     )
