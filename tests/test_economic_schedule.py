@@ -7,8 +7,10 @@ from support import bootstrap
 bootstrap()
 
 from custom_components.battery_smartflow_ai.core.economic_schedule import (
+    EconomicBattery,
     EconomicSlot,
     plan_economic_dispatch,
+    plan_split_economic_dispatch,
 )
 from custom_components.battery_smartflow_ai.core.models.market import (
     MarketPrice,
@@ -18,6 +20,63 @@ from custom_components.battery_smartflow_ai.core.models.market import (
     MarketPriceValidity,
 )
 from custom_components.battery_smartflow_ai.economic_planning import economic_slots, import_price_preview
+from custom_components.battery_smartflow_ai.group_grid_charging import (
+    MEMBER_GRID_CHARGE_SPREADS,
+    eligible_grid_charge_members,
+    member_grid_charge_policy,
+)
+
+
+def split_plan(prices, loads, *, winter=True, output_w=2000):
+    start = datetime(2026, 11, 25, tzinfo=timezone.utc)
+    slots = [EconomicSlot(
+        start + timedelta(hours=i), start + timedelta(hours=i + 1), price, load,
+    ) for i, (price, load) in enumerate(zip(prices, loads, strict=True))]
+    batteries = [
+        EconomicBattery("Hyper", 2, 0, 1200, 1200, 0.79, 27, True),
+        EconomicBattery("800", 2, 0, 1000, 800, 0.87, 20, winter),
+    ]
+    return plan_split_economic_dispatch(
+        slots, batteries, max_input_w=2200, max_output_w=output_w, export_price=0.0,
+    )
+
+
+def test_split_plan_at_20_percent_buys_only_on_the_800():
+    result = split_plan([0.40, 0.48], [0, 0.60])
+    first, peak = result.dispatch
+    assert first.grid_charge_by_device == pytest.approx({"Hyper": 0, "800": 0.60 / 0.87})
+    assert peak.discharge_by_device == pytest.approx({"Hyper": 0, "800": 0.60})
+    assert split_plan([0.40, 0.479], [0, 0.60]).grid_top_up_kwh == 0
+
+
+def test_split_plan_covers_shared_demand_once_and_obeys_group_output_limit():
+    result = split_plan([0.30, 0.50], [0, 1.80], output_w=1000)
+    assert result.dispatch[1].discharge_by_device == pytest.approx({"Hyper": 0.20, "800": 0.80})
+    assert result.grid_top_up_kwh == pytest.approx(0.20 / 0.79 + 0.80 / 0.87)
+    assert split_plan([0.30, 0.50], [0, 0]).grid_top_up_kwh == 0
+
+
+def test_split_plan_allows_the_800_to_store_pv_but_not_grid_in_summer():
+    summer = split_plan([0.30, 0.50], [0, 0.60], winter=False)
+    assert summer.dispatch[0].grid_charge_by_device["800"] == 0
+    solar = split_plan([0.30, 0.50], [-1.60, 1.25], winter=False)
+    assert solar.grid_top_up_kwh == 0
+    assert solar.dispatch[1].discharge_by_device["800"] > 0
+
+
+def test_existing_setup_gets_model_specific_defaults_and_can_override_the_800():
+    options = {"native_zendure_device_setups": {"devices": {
+        "h": {"setup_status": "configured", "profile_key": "Hyper 2000"},
+        "s": {"setup_status": "configured", "profile_key": "SF800Plus"},
+    }}}
+    policies = member_grid_charge_policy(options, ("h", "s"), 27.0)
+    assert policies == {"h": (27, 0.79, False), "s": (20, 0.87, True)}
+    assert eligible_grid_charge_members(policies, 0.40, [0.48], winter=True) == ("s",)
+    assert eligible_grid_charge_members(policies, 0.40, [0.48], winter=False) == ()
+    assert eligible_grid_charge_members(policies, 0.40, [], winter=True) == ()
+    options[MEMBER_GRID_CHARGE_SPREADS] = {"s": 18}
+    policies = member_grid_charge_policy(options, ("h", "s"), 27.0)
+    assert eligible_grid_charge_members(policies, 0.40, [0.472], winter=True) == ("s",)
 
 
 def plan(loads, prices, *, stored=0.0, max_input_w=1000, max_output_w=1000,

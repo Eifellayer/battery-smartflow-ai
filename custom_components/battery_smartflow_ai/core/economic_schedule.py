@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import math
 
@@ -32,6 +32,8 @@ class EconomicDispatch:
     slot: EconomicSlot
     grid_charge_kwh: float
     discharge_kwh: float
+    grid_charge_by_device: dict[str, float] = field(default_factory=dict)
+    discharge_by_device: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,18 @@ class EconomicSchedule:
     @property
     def grid_top_up_kwh(self) -> float:
         return sum(item.grid_charge_kwh for item in self.dispatch)
+
+
+@dataclass(frozen=True)
+class EconomicBattery:
+    device_id: str
+    usable_capacity_kwh: float
+    stored_kwh: float
+    max_input_w: float
+    max_output_w: float
+    round_trip_efficiency: float
+    minimum_spread_pct: float
+    allow_grid_charge: bool
 
 
 @dataclass
@@ -181,3 +195,105 @@ def plan_economic_dispatch(
         max(0.0, required - first.grid_charge_kwh * round_trip - current_solar),
     )
     return EconomicSchedule(dispatch, reserved, max(0.0, available - reserved))
+
+
+def plan_split_economic_dispatch(
+    slots: Sequence[EconomicSlot], batteries: Sequence[EconomicBattery], *,
+    max_input_w: float, max_output_w: float, export_price: float,
+) -> EconomicSchedule:
+    """Plan each battery's AC purchases against the same household demand."""
+
+    if not slots or not batteries:
+        return EconomicSchedule((), 0.0, 0.0)
+
+    count = len(slots)
+    grid = len(batteries) * count
+    solar = grid + count
+    demand = solar + count
+    source, sink = demand + count, demand + count + 1
+    graph: list[list[_Edge]] = [[] for _ in range(sink + 1)]
+    for index, slot in enumerate(slots):
+        load = min(max_output_w * slot.hours / 1000, max(0.0, slot.net_load_kwh))
+        _add_edge(graph, demand + index, sink, load if slot.price > 0 else 0.0, -slot.price)
+
+    terminal_edges = []
+    available = []
+    outputs = []
+    for offset, battery in enumerate(batteries):
+        base = offset * count
+        efficiency = math.sqrt(battery.round_trip_efficiency)
+        capacity = battery.usable_capacity_kwh * efficiency
+        stored = min(capacity, max(0.0, battery.stored_kwh * efficiency))
+        available.append(stored)
+        _add_edge(graph, source, base, stored, -1.0)
+        terminal_edges.append(_add_edge(graph, base + count - 1, sink, capacity, 0.0))
+        outputs.append([
+            _add_edge(graph, base + index, demand + index, battery.max_output_w * slot.hours / 1000, 0.0)
+            for index, slot in enumerate(slots)
+        ])
+        for index in range(count - 1):
+            _add_edge(graph, base + index, base + index + 1, capacity, 0.0)
+
+    _send_profitable_flow(graph, source, sink)
+    for edge in terminal_edges:
+        edge.capacity = 0.0
+
+    # The common input edges are in AC-deliverable kWh. Convert the shared
+    # input ceiling using the least efficient participant so it cannot be exceeded.
+    solar_eta = min(battery.round_trip_efficiency for battery in batteries)
+    grid_eta = min(
+        (battery.round_trip_efficiency for battery in batteries if battery.allow_grid_charge),
+        default=0.0,
+    )
+    purchases = [[] for _ in batteries]
+    solar_edges = [[] for _ in batteries]
+    for index, slot in enumerate(slots):
+        input_limit = max_input_w * slot.hours / 1000
+        surplus = min(input_limit, max(0.0, -slot.net_load_kwh))
+        _add_edge(graph, source, solar + index, surplus * solar_eta, 0.0)
+        _add_edge(graph, source, grid + index, 0.0 if surplus else input_limit * grid_eta, 0.0)
+        for offset, battery in enumerate(batteries):
+            node = offset * count + index
+            eta = battery.round_trip_efficiency
+            room = battery.usable_capacity_kwh * math.sqrt(eta)
+            limit = min(room, battery.max_input_w * slot.hours * eta / 1000)
+            solar_edges[offset].append(_add_edge(
+                graph, solar + index, node, limit, max(0.0, export_price) / eta,
+            ))
+            cost = slot.price / eta
+            if slot.price > 0:
+                # At the chosen spread a purchase is eligible if it still saves
+                # money after physical losses. Do not count those losses twice.
+                cost = max(cost, slot.price * (1 + battery.minimum_spread_pct / 100) - 2 * _EPSILON)
+            purchases[offset].append(_add_edge(
+                graph, grid + index, node, limit if battery.allow_grid_charge else 0.0, cost,
+            ))
+    _send_profitable_flow(graph, source, sink)
+
+    dispatch = []
+    reserved = 0.0
+    for offset, battery in enumerate(batteries):
+        required = 0.0
+        for index in range(count - 1, -1, -1):
+            node = offset * count + index
+            solar_kwh = graph[node][solar_edges[offset][index].reverse].capacity
+            grid_kwh = graph[node][purchases[offset][index].reverse].capacity
+            output_kwh = graph[demand + index][outputs[offset][index].reverse].capacity
+            required = max(0.0, required + output_kwh - grid_kwh - solar_kwh)
+        first_output = graph[demand][outputs[offset][0].reverse].capacity
+        reserved += min(max(0.0, available[offset] - first_output), max(0.0, required - first_output))
+
+    for index, slot in enumerate(slots):
+        charge_by_device = {}
+        discharge_by_device = {}
+        for offset, battery in enumerate(batteries):
+            node = offset * count + index
+            charge_by_device[battery.device_id] = (
+                graph[node][purchases[offset][index].reverse].capacity / battery.round_trip_efficiency
+            )
+            discharge_by_device[battery.device_id] = graph[demand + index][outputs[offset][index].reverse].capacity
+        dispatch.append(EconomicDispatch(
+            slot, sum(charge_by_device.values()), sum(discharge_by_device.values()),
+            charge_by_device, discharge_by_device,
+        ))
+    return EconomicSchedule(tuple(dispatch), reserved, max(0.0, sum(available) - reserved))
