@@ -392,30 +392,38 @@ def _public_group_device_id(device_id: str) -> str:
     ).hexdigest()[:12]
 
 
-def _next_discharge_price_window(
+def _discharge_price_plan(
     points: Sequence[MarketPricePoint], now: datetime, *thresholds: float | None
 ) -> dict[str, Any]:
-    """Find a future price opportunity for display only."""
+    """Show price opportunities without assuming future load, SoC or permissions."""
 
     usable_thresholds = [
         value for value in thresholds if value is not None and math.isfinite(value)
     ]
-    future_points = [point for point in points if point.start > now]
+    future_points = sorted(
+        (point for point in points if point.start > now and math.isfinite(point.price)),
+        key=lambda point: point.start,
+    )
     if not usable_thresholds or not future_points:
         return {"status": "no_price_forecast"}
     threshold = min(usable_thresholds)
-    first = min(
-        (point for point in future_points if point.price >= threshold),
-        key=lambda point: point.start,
-        default=None,
-    )
-    if first is None:
+    windows = []
+    # The live rule also checks the average of prices still ahead. Estimate
+    # that comparison separately at the beginning of each future interval.
+    remaining_total = 0.0
+    for count, point in enumerate(reversed(future_points), start=1):
+        remaining_total += point.price
+        if point.price >= threshold and (count == 1 or point.price > remaining_total / count):
+            windows.append({
+                "start": point.start.isoformat(), "end": point.end.isoformat(), "price": point.price,
+            })
+    if not windows:
         return {"status": "no_matching_price"}
+    windows.reverse()
     return {
         "status": "price_opportunity",
-        "start": first.start.isoformat(),
-        "end": first.end.isoformat(),
-        "price": first.price,
+        **windows[0],
+        "windows": windows,
     }
 
 
@@ -1201,12 +1209,15 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "horizon_end": slots[-1].end.isoformat(),
         }
         for field in ("grid_charge_kwh", "discharge_kwh"):
-            window = next(
-                (entry.slot for entry in schedule.dispatch if getattr(entry, field) >= 0.005),
-                None,
-            )
-            if window:
-                summary[field] = {"start": window.start.isoformat(), "end": window.end.isoformat(), "price": window.price}
+            windows = [
+                {
+                    "start": entry.slot.start.isoformat(), "end": entry.slot.end.isoformat(),
+                    "price": entry.slot.price, "energy_kwh": round(getattr(entry, field), 3),
+                }
+                for entry in schedule.dispatch if getattr(entry, field) >= 0.005
+            ]
+            if windows:
+                summary[field] = {**windows[0], "windows": windows} if status == "active" else windows[0]
         # Ignore sub-Wh targets. Avoid division by a nearly elapsed slot.
         if status != "active" or first.slot.hours * 3600 < 10:
             return summary, 0.0 if status == "active" else None
@@ -11557,23 +11568,28 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif learned_planning_enabled and season_mode != "manual" and learned_charge_plan.mode == "classic_fallback":
                 charge_plan = {"status": "charge_planner_not_ready"}
             discharge_plan = (
-                _next_discharge_price_window(
+                _discharge_price_plan(
                     price_points, now, effective_discharge_threshold, very_expensive
                 )
                 if season_mode == "winter"
                 else {"status": "no_fixed_discharge_time"}
             )
+            price_preview = import_price_preview(now, import_market_price)
+            price_preview["discharge_windows"] = discharge_plan.pop("windows", ())
             details["operation_plan"] = {
                 "charge": charge_plan,
                 "discharge": discharge_plan,
                 "economics": economic_plan,
-                "price_forecast": import_price_preview(now, import_market_price),
+                "price_forecast": price_preview,
             }
+            if next_action_state == "discharging_active" and group_feedback is not None:
+                details["operation_plan"]["observed_group_output_w"] = round(group_feedback.output_w)
             if economic_plan and economic_plan["status"] == "active":
                 for direction, field in (
                     ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh")
                 ):
                     window = economic_plan.get(field)
+                    price_preview[f"{direction}_windows"] = window.pop("windows", ()) if window else ()
                     details["operation_plan"][direction] = (
                         {**window, "status": "economic_window"}
                         if window else {"status": "economic_no_window"}

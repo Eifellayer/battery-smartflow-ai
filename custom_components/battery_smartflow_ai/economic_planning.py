@@ -19,7 +19,10 @@ def import_price_preview(now: datetime, market: MarketPrice) -> dict:
         "unit": market.unit,
         "current_price": market.current_price if market.valid else None,
         "periods": [
-            {"start": point.start.isoformat(), "end": point.end.isoformat(), "price": point.price}
+            {
+                "start": point.start.isoformat(), "end": point.end.isoformat(),
+                "price": point.price, "current": point.start <= now < point.end,
+            }
             for point in sorted(points, key=lambda point: point.start)
             if point.end > now and point.start < horizon
             and point.start < point.end and math.isfinite(point.price)

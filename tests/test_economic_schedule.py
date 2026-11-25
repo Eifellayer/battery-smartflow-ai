@@ -107,6 +107,7 @@ def test_price_preview_shows_published_intervals_even_if_planning_has_a_gap():
     assert preview["current_price"] == 0.21
     assert preview["unit"] == "€/kWh"
     assert len(preview["periods"]) == 7
+    assert [period["current"] for period in preview["periods"]] == [True] + [False] * 6
     assert preview["periods"][1]["start"] == points[2].start.isoformat()
     assert not economic_slots(
         now, market, load_model=None, forecast_base_load_w=300,

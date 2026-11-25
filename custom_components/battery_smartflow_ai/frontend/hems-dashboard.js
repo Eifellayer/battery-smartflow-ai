@@ -523,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.71";
+    const version = this._panel?.config?.dashboard_version || "1.0.72";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1261,7 +1261,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const start = time(plan.start);
       const end = time(plan.end);
       const range = start && end ? `${start} – ${end}` : start;
-      const status = this._t(isActive ? `plan_${direction}_active` : `plan_${plan.status}`);
+      const status = this._t(isActive
+        ? direction === "discharge" ? this._dischargeLiveLabel(nextAction) : "plan_charge_active"
+        : `plan_${plan.status}`);
       const details = [range];
       if (direction === "charge" && Number.isFinite(plan.energy_kwh) && plan.energy_kwh > 0) {
         details.push(`${plan.energy_kwh.toLocaleString(locale, { maximumFractionDigits: 2 })} kWh`);
@@ -1280,6 +1282,12 @@ class BatterySmartFlowDashboard extends HTMLElement {
     </div>`;
   }
 
+  _dischargeLiveLabel(nextAction) {
+    const watts = nextAction?.attributes?.observed_group_output_w;
+    return Number.isFinite(watts) && watts >= 30
+      ? "plan_discharge_active" : "price_preview_discharge_requested";
+  }
+
   _pricePreview() {
     const t = (key) => this._escape(this._t(key));
     const format = new Intl.DateTimeFormat(this._hass?.locale?.language, {
@@ -1295,27 +1303,53 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const unit = preview?.unit || "";
       const value = (price) => `${price.toLocaleString(this._hass?.locale?.language, { maximumFractionDigits: 4 })} ${unit}`.trim();
       const heading = messages.length > 1 ? `<h3>${this._escape(title)}</h3>` : "";
+      const groupOutput = nextAction?.attributes?.observed_group_output_w;
+      const isDischarging = nextAction?.state === "discharging_active";
+      const liveLabel = this._dischargeLiveLabel(nextAction);
+      const measuredDischarge = isDischarging && liveLabel === "plan_discharge_active";
+      const live = isDischarging ? `<p class="price-preview-live"><strong>${t(liveLabel)}</strong>
+        ${measuredDischarge ? `${this._escape(groupOutput.toLocaleString(this._hass?.locale?.language))} W` : ""}</p>` : "";
       const current = Number.isFinite(preview?.current_price)
         ? `<p>${t("price_preview_current")} <strong>${this._escape(value(preview.current_price))}</strong></p>` : "";
-      if (!periods.length) return `${heading}${current}<p>${t("price_preview_missing")}</p>`;
+      if (!periods.length) return `${heading}${live}${current}<p>${t("price_preview_missing")}</p>`;
       const low = periods.reduce((best, point) => point.price < best.price ? point : best);
       const high = periods.reduce((best, point) => point.price > best.price ? point : best);
-      const overlaps = (start, end, plan) => start < Date.parse(plan?.end) && end > Date.parse(plan?.start);
-      const rows = periods.map(({ start, end, price }) => {
+      const chargeWindows = preview?.charge_windows ?? [charge];
+      const dischargeWindows = preview?.discharge_windows ?? [discharge];
+      const overlaps = (start, end, windows) => windows.some(
+        (window) => start < Date.parse(window?.end) && end > Date.parse(window?.start)
+      );
+      const opportunity = discharge?.status === "price_opportunity";
+      const dischargeLabel = opportunity ? "price_preview_discharge_possible" : "price_preview_discharge_planned";
+      const ranges = [];
+      const rows = periods.map(({ start, end, price, current }) => {
         const startMs = Date.parse(start);
         const endMs = Date.parse(end);
-        const actions = [[charge, "charge"], [discharge, "discharge"]]
-          .filter(([plan]) => overlaps(startMs, endMs, plan))
-          .map(([, action]) => `<span class="preview-action ${action}">${t(action)}</span>`).join(" ");
+        const inDischargeWindow = overlaps(startMs, endMs, dischargeWindows);
+        if (inDischargeWindow) {
+          if (ranges.at(-1)?.end === startMs) ranges.at(-1).end = endMs;
+          else ranges.push({ start: startMs, end: endMs });
+        }
+        const actions = [
+          overlaps(startMs, endMs, chargeWindows) && ["charge", "price_preview_charge_planned"],
+          current && isDischarging
+            ? ["discharge", liveLabel]
+            : inDischargeWindow && [`discharge${opportunity ? " opportunity" : ""}`, dischargeLabel],
+        ].filter(Boolean).map(([kind, label]) => `<span class="preview-action ${kind}">${t(label)}</span>`).join(" ");
         const relative = high.price === low.price ? 50 : Math.round(100 * (price - low.price) / (high.price - low.price));
         return `<tr><th scope="row">${this._escape(time(startMs))} – ${this._escape(time(endMs))}</th>
           <td><span>${this._escape(value(price))}</span><span class="price-preview-bar" aria-hidden="true"><i style="width:${Math.max(3, relative)}%"></i></span></td>
           <td>${actions || "–"}</td></tr>`;
       });
-      return `${heading}${current}<div class="health-grid price-preview-stats">
+      const nextRanges = ranges.slice(0, 3).map(({ start, end }) =>
+        `<li>${this._escape(time(start))} – ${this._escape(time(end))}</li>`).join("");
+      const rangeSummary = nextRanges
+        ? `<section class="price-preview-ranges"><h3>${t(opportunity ? "price_preview_opportunities" : "price_preview_schedule")}</h3>
+          <ul>${nextRanges}</ul>${opportunity ? `<p>${t("price_preview_opportunity_help")}</p>` : ""}</section>` : "";
+      return `${heading}${live}${current}<div class="health-grid price-preview-stats">
         <article><small>${t("price_preview_low")}</small><strong>${this._escape(value(low.price))}</strong><small>${this._escape(time(low.start))}</small></article>
         <article><small>${t("price_preview_high")}</small><strong>${this._escape(value(high.price))}</strong><small>${this._escape(time(high.start))}</small></article>
-      </div><div class="price-preview-table" tabindex="0" role="region" aria-label="${t("price_preview")}">
+      </div>${rangeSummary}<div class="price-preview-table" tabindex="0" role="region" aria-label="${t("price_preview")}">
         <table><thead><tr><th scope="col">${t("price_preview_period")}</th><th scope="col">${t("price_preview_import")}</th>
         <th scope="col">${t("price_preview_plan")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>
       </div>`;
@@ -3404,6 +3438,12 @@ class BatterySmartFlowDashboard extends HTMLElement {
         .price-preview-bar i{display:block;height:100%;border-radius:inherit;background:#6da5bb}
         .preview-action{display:inline-block;padding:3px 7px;margin:1px;border-radius:5px;background:#243843;color:#e1f4fb}
         .preview-action.discharge{background:#254135;color:#d6f4e3}
+        .preview-action.opportunity{background:#353021;color:#f0dea5}
+        .price-preview-live{color:#bdeace}
+        .price-preview-ranges{margin:12px 0;padding:12px 14px;border:1px solid var(--line);border-radius:10px}
+        .price-preview-ranges h3,.price-preview-ranges p{margin:0}
+        .price-preview-ranges ul{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0;padding:0;list-style:none}
+        .price-preview-ranges li{background:#243038;padding:4px 8px;border-radius:6px;font-variant-numeric:tabular-nums}
         .health-summary{padding:clamp(15px,2.5vw,26px);background:#1a2024}
         .health-summary>.section-head{margin-bottom:14px;flex-wrap:wrap}
         .health-state{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:6px 10px;font-size:12px}

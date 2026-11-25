@@ -68,8 +68,8 @@ from custom_components.battery_smartflow_ai.core.models import (
 )
 from custom_components.battery_smartflow_ai.coordinator import (
     ZendureSmartFlowCoordinator,
+    _discharge_price_plan,
     _native_battery_power_totals,
-    _next_discharge_price_window,
 )
 
 # The coordinator only needs the Store adapter as a type here. Let the store
@@ -82,24 +82,27 @@ from custom_components.battery_smartflow_ai.core.models.states import (
 )
 
 
-def test_next_discharge_price_window_uses_future_intervals_only():
+def test_discharge_price_plan_lists_all_suitable_future_intervals():
     now = datetime(2026, 11, 24, 22, tzinfo=timezone.utc)
 
     def point(minutes, price):
         start = now + timedelta(minutes=minutes)
         return MarketPricePoint(start, start + timedelta(minutes=15), price)
 
-    intervals = [point(60, 0.60), point(-5, 0.60), point(15, 0.46), point(30, 0.49)]
-    assert _next_discharge_price_window(intervals, now, 0.50, 0.49) == {
+    intervals = [point(60, 0.60), point(-5, 0.60), point(15, 0.46),
+                 point(30, 0.55), point(75, 0.49), point(90, 0.53)]
+    result = _discharge_price_plan(intervals, now, 0.52, 0.49)
+    assert {key: result[key] for key in ("status", "start", "end", "price")} == {
         "status": "price_opportunity",
-        "start": point(30, 0.49).start.isoformat(),
-        "end": point(30, 0.49).end.isoformat(),
-        "price": 0.49,
+        "start": point(30, 0.55).start.isoformat(),
+        "end": point(30, 0.55).end.isoformat(),
+        "price": 0.55,
     }
-    assert _next_discharge_price_window(intervals, now, 0.65) == {
+    assert [window["price"] for window in result["windows"]] == [0.55, 0.60, 0.53]
+    assert _discharge_price_plan(intervals, now, 0.65) == {
         "status": "no_matching_price",
     }
-    assert _next_discharge_price_window(intervals[1:2], now, 0.49) == {
+    assert _discharge_price_plan(intervals[1:2], now, 0.49) == {
         "status": "no_price_forecast",
     }
 
