@@ -176,6 +176,10 @@ Die Verteilung erfolgt stufenweise. Angenommen, zwei Geräte dürfen jeweils 800
 
 Bei aktiver Gruppensteuerung begrenzen **Max. Entladeleistung** und **Max. AC-Ladeleistung** jeweils die Summe der Sollwerte. 700 W Entladeleistung gelten damit für die gesamte Gruppe. Jedes Gerät behält seine eigene Leistungsgrenze. Die Vorschau zeigt das Gruppenlimit und die verfügbaren Gerätegrenzen. Zuordnungen und Stromkreisgrenzen können die tatsächlich verteilbare Leistung weiter senken.
 
+Im Automatikmodus kann eine aktive Gruppe mit dem Ziel **Eigenverbrauch / nahe 0 W** ihren Speicher anhand der erwarteten Stromkosten einteilen. Die Planung vergleicht die erwartete Hauslast, den PV-Ertrag und die Strompreise für bis zu 24 Stunden. Sie hält Energie für teurere Stunden zurück, soweit der erwartete Bedarf sie rechtfertigt. Geplantes Netzladen deckt nur die voraussichtlich wirtschaftliche Fehlmenge. Die Rechnung setzt vorerst 81 Prozent Lade- und Entladewirkungsgrad zusammen an. Unter **Übersicht → Systemzustand** stehen die nächsten Zeitfenster, die reservierten Kilowattstunden, die für den aktuellen Zeitraum eingeplante Entladung und die geplante Netzladung. Wenn das Verbrauchsprofil oder die PV-Zeitreihe fehlt, zeigt das Portal den Grund und die Automatik verwendet ihre bisherige Strategie.
+
+Unter **Energie → Strompreisvorschau** zeigt das Portal die veröffentlichten Bezugspreise mit günstigstem und teuerstem Zeitraum. Lade- und Entladefenster erscheinen neben den zugehörigen Preisen. Wenn der Tariflieferant noch keine Preise bereitstellt, steht das in der Vorschau.
+
 | Entladeziel der Gruppe | Führendes Gerät | Zweites Gerät |
 | ---: | ---: | ---: |
 | 500 W | 500 W | 0 W |

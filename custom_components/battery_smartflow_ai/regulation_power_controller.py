@@ -727,6 +727,9 @@ class RegulationPowerController:
             )
             return export_target_w, metadata
 
+        if intent.reason == "economic_price_discharge":
+            return max(0.0, base_target_w), metadata
+
         # Active regulated discharge:
         # Export bias is only justified when the stored energy is clearly cheaper
         # than the feed-in tariff.

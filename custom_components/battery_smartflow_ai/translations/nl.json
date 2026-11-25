@@ -958,6 +958,9 @@
       "decision_reason": {
         "name": "Beslissingsreden",
         "state": {
+          "economic_planning_charge": "Netladen voor later huishoudelijk verbruik bij hoge prijzen",
+          "economic_price_discharge": "De batterij dekt het huishoudelijke verbruik volgens het kostenplan",
+          "economic_schedule_hold": "Het kostenplan voorziet momenteel geen laden of ontladen",
           "standby": "Gereed",
           "state_idle": "Geen behoefte herkend",
           "state_enter_discharge": "Ontladen gestart (behoefte herkend)",

@@ -125,6 +125,7 @@ class RuntimeSnapshot:
     pv_sensor_valid: bool = True
     soc_limits_valid: bool = True
     power_limits_valid: bool = True
+    economic_power_w: float | None = None  # Positive grid charge, negative discharge.
 
     @staticmethod
     def _measured(

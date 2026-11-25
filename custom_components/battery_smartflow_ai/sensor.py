@@ -2593,6 +2593,7 @@ def _device_id_for_identifiers(
 
 
 class ZendureSmartFlowSensor(CoordinatorEntity, SensorEntity):
+    _unrecorded_attributes = frozenset({"price_forecast"})
     _attr_has_entity_name = True
 
     def __init__(

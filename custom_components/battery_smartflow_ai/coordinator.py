@@ -163,6 +163,8 @@ from .hardware.shelly_3em import (
     async_read_shelly_3em_power,
 )
 from .forecast import async_build_forecast_summary
+from .core.economic_schedule import plan_economic_dispatch
+from .economic_planning import economic_slots, import_price_preview
 from .learned_planning import (
     LearningSample,
     LearningChargePowerSample,
@@ -1056,6 +1058,160 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 limit = min(limit, selected_hardware_limit_w)
             total += max(0.0, limit)
         return limit_group_power(self.entry.options, setting, total)
+
+    async def _economic_group_plan(
+        self, ctx, runtime, *, current_ac_input_w, load_model,
+        learned_ready, forecast_base_load_w, selected_capacity_kwh,
+        current_net_load_w,
+    ) -> tuple[dict[str, Any] | None, float | None]:
+        """Plan Automatic near-zero dispatch and keep incomplete input in preview."""
+
+        from .const import CONF_ELECTRICAL_TOPOLOGY
+        from .electrical_topology import normalize_electrical_topology
+        from .shadow_allocator import ShadowDevice, allocate_staged_efficiency
+
+        if ctx.ai_mode != AI_MODE_AUTOMATIC or not getattr(runtime, "control_enabled", False):
+            return None, None
+        try:
+            groups = reconcile_group_config(self.entry.options.get(CONF_BATTERY_GROUPS))["groups"]
+        except (TypeError, ValueError):
+            return None, None
+        group_id, group = next(
+            ((key, group) for key, group in groups.items()
+             if group["control_enabled"] and runtime.selected_device_id in group["members"]),
+            (None, None),
+        )
+        if group is None or group["objective"] != GROUP_OBJECTIVE_NEAR_ZERO or len(group["members"]) < 2:
+            return None, None
+        if not ctx.grid_sensor_valid or not ctx.pv_sensor_valid:
+            return {"status": "measurement_missing"}, None
+        if not ctx.soc_limits_valid or not ctx.power_limits_valid or ctx.soc_min >= ctx.soc_max:
+            return {"status": "device_data_missing"}, None
+        scope = self._selected_energy_scope(self.entry)
+        active_scope_groups = {
+            key for key in scope.get("group_ids", ()) if groups.get(key, {}).get("control_enabled")
+        }
+        if active_scope_groups != {group_id} or scope.get("grid_mode") not in {
+            ENERGY_GRID_MODE_SIGNED, ENERGY_GRID_MODE_SPLIT,
+        }:
+            return {"status": "topology_missing"}, None
+        try:
+            topology = normalize_electrical_topology(self.entry.options.get(CONF_ELECTRICAL_TOPOLOGY))
+        except (TypeError, ValueError):
+            return {"status": "topology_missing"}, None
+        circuits: dict[str, list[str]] = {}
+        for connection in topology["connections"]:
+            if connection["kind"] == "grid":
+                circuits.setdefault(connection["device_id"], []).append(connection["circuit_id"])
+        members = set(group["members"])
+        if not members.issubset(circuits):
+            return {"status": "topology_missing"}, None
+        snapshots = {
+            item["device_id"]: item
+            for item in runtime.shadow_allocation_snapshots(
+                reserve_soc_pct=ctx.soc_min, maximum_soc_pct=ctx.soc_max,
+            )
+            if item["device_id"] in members
+        }
+        if set(snapshots) != members:
+            return {"status": "device_data_missing"}, None
+        capacity = stored = 0.0
+        devices = []
+        for device_id, item in snapshots.items():
+            if (
+                not item["available"] or not item["configured"] or not item["supported"]
+                or item["hems_blocked"] or item["protected"]
+            ):
+                return {"status": "device_data_missing"}, None
+            soc = _to_float(item["soc_pct"])
+            device_capacity = _to_float(item["capacity_kwh"])
+            if device_capacity is None and device_id == runtime.selected_device_id:
+                device_capacity = selected_capacity_kwh
+            if (
+                soc is None or not 0 <= soc <= 100 or device_capacity is None
+                or not math.isfinite(device_capacity) or device_capacity <= 0
+            ):
+                return {"status": "device_data_missing"}, None
+            reserve, maximum = float(item["reserve_soc_pct"]), float(item["maximum_soc_pct"])
+            if not 0 <= reserve < maximum <= 100:
+                return {"status": "device_data_missing"}, None
+            capacity += device_capacity * (maximum - reserve) / 100.0
+            stored += device_capacity * max(0.0, min(maximum, soc) - reserve) / 100.0
+            input_limit = float(item["max_charge_w"])
+            if device_id == runtime.selected_device_id:
+                input_limit = min(input_limit, current_ac_input_w)
+            # Compute wiring ceilings at a feasible SoC. The cost planner
+            # separately accounts for actual stored energy in every interval.
+            devices.append(ShadowDevice(
+                device_id=device_id, name=device_id, available=True, configured=True,
+                supported=True, hems_blocked=False, protected=False,
+                soc_pct=(reserve + maximum) / 2, reserve_soc_pct=reserve,
+                maximum_soc_pct=maximum, capacity_kwh=device_capacity,
+                max_charge_w=input_limit, max_discharge_w=float(item["max_discharge_w"]),
+                circuit_ids=tuple(circuits[device_id]),
+            ))
+        charge_ceiling = limit_group_power(
+            self.entry.options, SETTING_MAX_CHARGE, sum(device.max_charge_w for device in devices),
+        )
+        discharge_ceiling = limit_group_power(
+            self.entry.options, SETTING_MAX_DISCHARGE, sum(device.max_discharge_w for device in devices),
+        )
+        max_input_w = allocate_staged_efficiency(charge_ceiling, devices, topology).proposed_power_w
+        max_output_w = allocate_staged_efficiency(-discharge_ceiling, devices, topology).proposed_power_w
+
+        forecast = ctx.forecast
+        solar_intervals = getattr(forecast, "power_intervals", ())
+        market = ctx.import_market_price
+        if market is None:
+            return {"status": "price_data_missing"}, None
+        slots = economic_slots(
+            ctx.now, market, load_model=load_model if learned_ready else None,
+            forecast_base_load_w=forecast_base_load_w,
+            current_net_load_w=current_net_load_w, solar_intervals=solar_intervals,
+        )
+        if not slots:
+            return {"status": "price_data_missing"}, None
+        # With PV connected, a daily total without timestamps cannot safely
+        # distinguish production before a price peak from production after it.
+        has_solar_data = any(
+            start + timedelta(hours=duration) > ctx.now and start < slots[-1].end
+            for start, duration, _ in solar_intervals
+        )
+        status = (
+            "load_history_missing" if not learned_ready
+            else "solar_forecast_missing" if not has_solar_data
+            else "active"
+        )
+        export = ctx.export_market_price
+        schedule = await self.hass.async_add_executor_job(partial(
+            plan_economic_dispatch, slots,
+            usable_capacity_kwh=capacity, stored_kwh=stored, max_input_w=max_input_w,
+            max_output_w=max_output_w,
+            export_price=export.current_price if export and export.valid else 0.0,
+            margin_pct=ctx.profit_margin_pct, allow_grid_charge=status == "active",
+        ))
+        if not schedule.dispatch:
+            return {"status": "device_data_missing"}, None
+        first = schedule.dispatch[0]
+        summary = {
+            "status": status,
+            "reserved_kwh": round(schedule.stored_for_later_kwh, 3),
+            "available_kwh": round(schedule.available_now_kwh, 3),
+            "top_up_kwh": round(schedule.grid_top_up_kwh, 3) if status == "active" else None,
+            "horizon_end": slots[-1].end.isoformat(),
+        }
+        for field in ("grid_charge_kwh", "discharge_kwh"):
+            window = next(
+                (entry.slot for entry in schedule.dispatch if getattr(entry, field) >= 0.005),
+                None,
+            )
+            if window:
+                summary[field] = {"start": window.start.isoformat(), "end": window.end.isoformat(), "price": window.price}
+        # Ignore sub-Wh targets. Avoid division by a nearly elapsed slot.
+        if status != "active" or first.slot.hours * 3600 < 10:
+            return summary, 0.0 if status == "active" else None
+        power_w = (first.grid_charge_kwh - first.discharge_kwh) * 1000 / first.slot.hours
+        return summary, power_w
 
     def _group_feedback_sample(self, runtime, *, now, grid_age_s, grid_valid):
         """Use only complete, recent group AC measurements, never DC battery flow."""
@@ -7650,6 +7806,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_soc_pct=float(soc_min),
                 maximum_soc_pct=float(soc_max),
             )
+            _, group_selected_max_input_w, _ = resolve_charge_limits(
+                profile,
+                configured_charge_w=profile_max_in,
+                battery_packs=configured_packs,
+                native_pv_w=native_pv_w,
+                native_pv_valid=bool(native_pv_configured and native_pv_sensor_valid),
+            )
             ctx = RuntimeSnapshot(
                 now=now,
                 soc=soc,
@@ -7784,6 +7947,18 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 soc_limits_valid=bool(soc_limits_valid),
                 power_limits_valid=bool(power_limits_valid),
             )
+
+            economic_plan, ctx.economic_power_w = await self._economic_group_plan(
+                ctx, native_runtime,
+                current_ac_input_w=group_selected_max_input_w,
+                load_model=learned_slot_model,
+                learned_ready=learned_planning_enabled and learned_readiness.status == "ready",
+                forecast_base_load_w=forecast_base_load_w,
+                selected_capacity_kwh=battery_capacity_kwh,
+                current_net_load_w=house_load - pv_w,
+            )
+            if ctx.economic_power_w is not None and self._persist.get("charge_commit_active"):
+                self._clear_charge_commit("economic_schedule")
 
             base_required_kwh = (
                 battery_capacity_kwh
@@ -8118,7 +8293,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 float(self._persist.get("last_set_output_w", 0.0) or 0.0),
             )
 
-            automatic_economic_hold_active = maintain_active_economic_discharge(
+            automatic_economic_hold_active = ctx.economic_power_w is None and maintain_active_economic_discharge(
                 automatic_mode_active=(ai_mode == AI_MODE_AUTOMATIC),
                 strategy_active=bool(automatic_strategy_context.active),
                 strategy_allows_discharge=bool(
@@ -8418,7 +8593,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 
             # The strategic AC charge binding runs before power tracking and
             # StrategyIntent creation so the unified regulation sees it.
-            if not maintenance_application.applied:
+            if not maintenance_application.applied and ctx.economic_power_w is None:
                 decision = self._apply_charge_commit(
                     now=now,
                     decision=decision,
@@ -8991,13 +9166,6 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 * soc_min_discharge_taper_fraction
             )
             group_selected_max_output_w = profile_max_out * soc_min_discharge_taper_fraction
-            _, group_selected_max_input_w, _ = resolve_charge_limits(
-                profile,
-                configured_charge_w=profile_max_in,
-                battery_packs=configured_packs,
-                native_pv_w=native_pv_w,
-                native_pv_valid=bool(native_pv_configured and native_pv_sensor_valid),
-            )
             strategy_intent.metadata.update(
                 {
                     "group_selected_max_input_w": group_selected_max_input_w,
@@ -9024,6 +9192,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_soc_pct=float(soc_min),
                 maximum_soc_pct=float(soc_max),
             )
+            if (
+                group_max_input_w is not None
+                and decision.reason in {
+                    "economic_planning_charge", "economic_price_discharge", "economic_schedule_hold",
+                }
+            ):
+                group_max_input_w = min(group_max_input_w, float(decision.charge_w or 0.0))
             regulation_max_input_w = (
                 group_max_input_w
                 if group_max_input_w is not None
@@ -9035,6 +9210,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if (
                 group_max_input_w is not None
+                and ctx.economic_power_w is None
                 and group_max_input_w > float(max_ac_input) + 0.5
                 and str(strategy_intent.requested_mode).lower() == "input"
                 and requested_charge_w is not None
@@ -9070,6 +9246,14 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     selected_hardware_limit_w=group_selected_max_output_w,
                     reserve_soc_pct=float(soc_min),
                     maximum_soc_pct=float(soc_max),
+                )
+            if (
+                group_max_output_w is not None
+                and ctx.economic_power_w is not None
+                and not pv_houseload_passthrough_selected
+            ):
+                group_max_output_w = min(
+                    group_max_output_w, float(decision.discharge_w or 0.0)
                 )
             regulation_max_output_w = (
                 group_max_output_w
@@ -11382,7 +11566,18 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             details["operation_plan"] = {
                 "charge": charge_plan,
                 "discharge": discharge_plan,
+                "economics": economic_plan,
+                "price_forecast": import_price_preview(now, import_market_price),
             }
+            if economic_plan and economic_plan["status"] == "active":
+                for direction, field in (
+                    ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh")
+                ):
+                    window = economic_plan.get(field)
+                    details["operation_plan"][direction] = (
+                        {**window, "status": "economic_window"}
+                        if window else {"status": "economic_no_window"}
+                    )
 
             await self._capture_regulation_training_sample(
                 now=now,

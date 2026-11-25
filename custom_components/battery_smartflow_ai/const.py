@@ -39,7 +39,7 @@ def virtual_device_model(language: str | None) -> str:
 
 INTEGRATION_MANUFACTURER = "PalmManiac"
 INTEGRATION_MODEL = "Home Assistant Integration"
-INTEGRATION_VERSION = "6.0.10-eifellayer.12"
+INTEGRATION_VERSION = "6.0.10-eifellayer.13"
 
 # V5 native Zendure discovery is observation-only in the first development
 # build. The App Token is account discovery material and must never be copied
@@ -564,6 +564,9 @@ STRATEGY_REASON_ENUMS = [
 STRATEGIC_REASON_ENUMS = [*STRATEGY_REASON_ENUMS, "native_capacity_unavailable"]
 
 DECISION_REASON_ENUMS = [
+    "economic_planning_charge",
+    "economic_price_discharge",
+    "economic_schedule_hold",
     "standby",
     "state_idle",
     "state_enter_discharge",

@@ -1137,6 +1137,9 @@
       "decision_reason": {
         "name": "Entscheidungsgrund",
         "state": {
+          "economic_planning_charge": "Netzladung für späteren teuren Hausverbrauch",
+          "economic_price_discharge": "Akkustrom deckt den Hausverbrauch laut Kostenplan",
+          "economic_schedule_hold": "Der Kostenplan sieht gerade keine Lade- oder Entladeleistung vor",
           "standby": "Bereitschaft",
           "state_idle": "Kein Bedarf erkannt",
           "state_enter_discharge": "Entladen gestartet (Bedarf erkannt)",

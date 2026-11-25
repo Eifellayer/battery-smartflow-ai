@@ -1160,6 +1160,9 @@
       "decision_reason": {
         "name": "Decision reason",
         "state": {
+          "economic_planning_charge": "Grid charging for later high-price household demand",
+          "economic_price_discharge": "Battery covers household demand according to the cost plan",
+          "economic_schedule_hold": "The cost plan currently calls for no charging or discharging",
           "standby": "Ready",
           "state_idle": "No demand detected",
           "state_enter_discharge": "Discharging started (demand detected)",
