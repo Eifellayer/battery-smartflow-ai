@@ -68,8 +68,9 @@ from custom_components.battery_smartflow_ai.core.models import (
 )
 from custom_components.battery_smartflow_ai.coordinator import (
     ZendureSmartFlowCoordinator,
+    _charge_price_opportunities,
     _discharge_price_plan,
-    _group_discharge_display,
+    _group_power_display,
     _native_battery_power_totals,
 )
 from custom_components.battery_smartflow_ai.group_feedback import GroupFeedback
@@ -109,6 +110,17 @@ def test_discharge_price_plan_lists_all_suitable_future_intervals():
     }
 
 
+def test_charge_price_opportunities_use_future_tou_and_include_the_threshold():
+    now = datetime(2026, 11, 25, 12, tzinfo=timezone.utc)
+    prices = {-15: 0.01, 0: 0.10, 15: 0.42, 30: 0.45, 45: 0.52, 1440: 0.20}
+    points = [
+        MarketPricePoint(now + timedelta(minutes=offset), now + timedelta(minutes=offset + 15), price)
+        for offset, price in prices.items()
+    ]
+    assert [p["price"] for p in _charge_price_opportunities(points, now, 0.25, 0.45)] == [0.42, 0.45]
+    assert _charge_price_opportunities(points, now, None, float("nan")) == []
+
+
 def test_group_discharge_display_uses_fresh_pack_data_when_idle_controller_is_missing():
     now = datetime(2026, 11, 25, 7, 50, tzinfo=timezone.utc)
     empty = MeasuredValue.absent(ValueValidity.MISSING)
@@ -117,20 +129,42 @@ def test_group_discharge_display_uses_fresh_pack_data_when_idle_controller_is_mi
     targets = {"hyper": {"direction": "idle", "power_w": 0},
                "sf800": {"direction": "discharge", "power_w": -498}}
 
-    assert _group_discharge_display(now, targets, {"sf800": member}, None) == {
+    assert _group_power_display(now, targets, {"sf800": member}, None, direction="discharge") == {
         "group_discharge_requested": True, "observed_group_battery_discharge_w": 484,
     }
-    assert _group_discharge_display(now, targets, {"sf800": member}, GroupFeedback(0, 465, 5)) == {
+    assert _group_power_display(now, targets, {"sf800": member}, GroupFeedback(0, 465, 5), direction="discharge") == {
         "group_discharge_requested": True, "observed_group_output_w": 465,
     }
     member.ac_output_power_w = MeasuredValue.available(463, observed_at=now)
-    assert _group_discharge_display(now, targets, {"sf800": member}, None) == {
+    assert _group_power_display(now, targets, {"sf800": member}, None, direction="discharge") == {
         "group_discharge_requested": True, "observed_member_output_w": 463,
     }
-    assert _group_discharge_display(now + timedelta(seconds=31), targets, {"sf800": member}, None) == {
+    assert _group_power_display(now + timedelta(seconds=31), targets, {"sf800": member}, None, direction="discharge") == {
         "group_discharge_requested": True,
     }
-    assert _group_discharge_display(now, {"hyper": targets["hyper"]}, {"sf800": member}, None) == {}
+    assert _group_power_display(now, {"hyper": targets["hyper"]}, {"sf800": member}, None, direction="discharge") == {}
+
+
+def test_group_charge_display_distinguishes_measured_ac_and_pack_charge():
+    now = datetime(2026, 11, 25, 7, 50, tzinfo=timezone.utc)
+    empty = MeasuredValue.absent(ValueValidity.MISSING)
+    pack = SimpleNamespace(charge_power_w=MeasuredValue.available(640, observed_at=now))
+    states = {"sf800": SimpleNamespace(ac_input_power_w=empty, charge_power_w=empty, packs=[pack])}
+    targets = {"hyper": {"direction": "idle", "power_w": 0},
+               "sf800": {"direction": "charge", "power_w": 700}}
+    requested = {"group_charge_requested": True}
+
+    def show(feedback=None, *, age=0):
+        return _group_power_display(
+            now + timedelta(seconds=age), targets, states, feedback, direction="charge",
+        )
+
+    assert show(GroupFeedback(734, 0, 5)) == {**requested, "observed_group_input_w": 734}
+    assert show() == {**requested, "observed_group_battery_charge_w": 640}
+    states["sf800"].ac_input_power_w = MeasuredValue.available(710, observed_at=now)
+    assert show() == {**requested, "observed_member_input_w": 710}
+    assert show(age=31) == requested
+    assert _group_power_display(now, targets, states, None, direction="discharge") == {}
 
 
 def _device_state(charge: float | None, discharge: float | None):

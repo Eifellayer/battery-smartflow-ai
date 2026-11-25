@@ -427,6 +427,23 @@ def _discharge_price_plan(
     }
 
 
+def _charge_price_opportunities(
+    points: Sequence[MarketPricePoint], now: datetime, *thresholds: float | None,
+) -> list[dict[str, Any]]:
+    """Show periods below the current price criteria for optional AC charging."""
+
+    threshold = max(
+        (value for value in thresholds if value is not None and math.isfinite(value)),
+        default=-math.inf,
+    )
+    horizon = now + timedelta(hours=24)
+    return [
+        {"start": point.start.isoformat(), "end": point.end.isoformat(), "price": point.price}
+        for point in points
+        if now < point.start < horizon and math.isfinite(point.price) and point.price <= threshold
+    ]
+
+
 def _group_member_power_limits(
     snapshot: Mapping[str, Any], intent_metadata: Any
 ) -> dict[str, float]:
@@ -447,22 +464,27 @@ def _group_member_power_limits(
     return limits
 
 
-def _group_discharge_display(
+def _group_power_display(
     now: datetime, targets: Mapping[str, Any], states: Mapping[str, Any],
-    feedback: GroupFeedback | None,
+    feedback: GroupFeedback | None, *, direction: str,
 ) -> dict[str, Any]:
-    """Describe accepted discharge and fresh measurements without changing control."""
+    """Describe accepted targets and fresh measurements without changing control."""
 
+    charging = direction == "charge"
+    sign = 1 if charging else -1
+    ac_side = "input" if charging else "output"
     active_members = [
         device_id for device_id, target in targets.items()
-        if isinstance(target, Mapping) and target.get("direction") == "discharge"
-        and _to_float(target.get("power_w"), 0.0) < 0
+        if isinstance(target, Mapping) and target.get("direction") == direction
+        and sign * _to_float(target.get("power_w"), 0.0) > 0
     ]
     if not active_members:
         return {}
-    result = {"group_discharge_requested": True}
-    if feedback is not None and feedback.output_w >= 30:
-        return {**result, "observed_group_output_w": round(feedback.output_w)}
+    result = {f"group_{direction}_requested": True}
+    if feedback is not None:
+        power = feedback.input_w if charging else feedback.output_w
+        if power >= 30:
+            return {**result, f"observed_group_{ac_side}_w": round(power)}
 
     def recent_power(measurement) -> float | None:
         if measurement is None or not measurement.valid or measurement.observed_at is None:
@@ -474,21 +496,23 @@ def _group_discharge_display(
         return watts
 
     ac_total = battery_total = 0.0
+    ac_field = f"ac_{ac_side}_power_w"
+    battery_field = f"{direction}_power_w"
     for member in active_members:
         state = states.get(member)
         if state is None:
             continue
-        ac_total += recent_power(state.ac_output_power_w) or 0.0
-        battery = recent_power(state.discharge_power_w)
+        ac_total += recent_power(getattr(state, ac_field)) or 0.0
+        battery = recent_power(getattr(state, battery_field))
         if not battery:
             battery = sum(
-                recent_power(pack.discharge_power_w) or 0.0 for pack in state.packs
+                recent_power(getattr(pack, battery_field)) or 0.0 for pack in state.packs
             )
         battery_total += battery
     if ac_total >= 30:
-        result["observed_member_output_w"] = round(ac_total)
+        result[f"observed_member_{ac_side}_w"] = round(ac_total)
     elif battery_total >= 30:
-        result["observed_group_battery_discharge_w"] = round(battery_total)
+        result[f"observed_group_battery_{direction}_w"] = round(battery_total)
     return result
 
 
@@ -11621,6 +11645,11 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             price_preview = import_price_preview(now, import_market_price)
             price_preview["discharge_windows"] = discharge_plan.pop("windows", ())
+            economic_plan_active = bool(economic_plan and economic_plan["status"] == "active")
+            if ai_mode == AI_MODE_AUTOMATIC and not economic_plan_active and charge_plan["status"] != "charge_window":
+                price_preview["charge_opportunities"] = _charge_price_opportunities(
+                    price_points, now, very_cheap_price, current_valley_threshold,
+                )
             details["operation_plan"] = {
                 "charge": charge_plan,
                 "discharge": discharge_plan,
@@ -11628,11 +11657,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "price_forecast": price_preview,
             }
             if group_active and getattr(native_runtime, "control_enabled", False) and not is_passthrough:
-                details["operation_plan"].update(_group_discharge_display(
-                    now, self._persist.get("group_control_last_targets", {}),
-                    native_runtime.fresh_device_state_map(), group_feedback,
-                ))
-            if economic_plan and economic_plan["status"] == "active":
+                targets = self._persist.get("group_control_last_targets", {})
+                member_states = native_runtime.fresh_device_state_map()
+                for direction in ("charge", "discharge"):
+                    details["operation_plan"].update(_group_power_display(
+                        now, targets, member_states, group_feedback, direction=direction,
+                    ))
+            if economic_plan_active:
                 for direction, field in (
                     ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh")
                 ):
