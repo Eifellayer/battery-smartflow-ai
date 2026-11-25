@@ -523,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.72";
+    const version = this._panel?.config?.dashboard_version || "1.0.73";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1278,14 +1278,24 @@ class BatterySmartFlowDashboard extends HTMLElement {
     };
     return `<div class="health-grid operation-plan">
       ${row("charge", charge, nextAction.state === "charging_active")}
-      ${row("discharge", discharge, nextAction.state === "discharging_active")}
+      ${row("discharge", discharge, this._dischargeInProgress(nextAction))}
     </div>`;
   }
 
+  _dischargeInProgress(nextAction) {
+    return nextAction?.state === "discharging_active"
+      || nextAction?.attributes?.group_discharge_requested === true;
+  }
+
   _dischargeLiveLabel(nextAction) {
-    const watts = nextAction?.attributes?.observed_group_output_w;
-    return Number.isFinite(watts) && watts >= 30
-      ? "plan_discharge_active" : "price_preview_discharge_requested";
+    const {
+      observed_group_output_w: output, observed_member_output_w: member,
+      observed_group_battery_discharge_w: battery,
+    } = nextAction?.attributes || {};
+    if (Number.isFinite(output) && output >= 30) return "plan_discharge_active";
+    if (Number.isFinite(member) && member >= 30) return "price_preview_member_discharging";
+    if (Number.isFinite(battery) && battery >= 30) return "price_preview_battery_discharging";
+    return "price_preview_discharge_requested";
   }
 
   _pricePreview() {
@@ -1303,12 +1313,14 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const unit = preview?.unit || "";
       const value = (price) => `${price.toLocaleString(this._hass?.locale?.language, { maximumFractionDigits: 4 })} ${unit}`.trim();
       const heading = messages.length > 1 ? `<h3>${this._escape(title)}</h3>` : "";
-      const groupOutput = nextAction?.attributes?.observed_group_output_w;
-      const isDischarging = nextAction?.state === "discharging_active";
+      const isDischarging = this._dischargeInProgress(nextAction);
       const liveLabel = this._dischargeLiveLabel(nextAction);
-      const measuredDischarge = isDischarging && liveLabel === "plan_discharge_active";
+      const onBatterySide = liveLabel === "price_preview_battery_discharging";
+      const power = onBatterySide ? nextAction.attributes.observed_group_battery_discharge_w
+        : (nextAction?.attributes?.observed_group_output_w ?? nextAction?.attributes?.observed_member_output_w);
+      const measuredDischarge = isDischarging && liveLabel !== "price_preview_discharge_requested";
       const live = isDischarging ? `<p class="price-preview-live"><strong>${t(liveLabel)}</strong>
-        ${measuredDischarge ? `${this._escape(groupOutput.toLocaleString(this._hass?.locale?.language))} W` : ""}</p>` : "";
+        ${measuredDischarge ? `${this._escape(power.toLocaleString(this._hass?.locale?.language))} W` : ""}</p>` : "";
       const current = Number.isFinite(preview?.current_price)
         ? `<p>${t("price_preview_current")} <strong>${this._escape(value(preview.current_price))}</strong></p>` : "";
       if (!periods.length) return `${heading}${live}${current}<p>${t("price_preview_missing")}</p>`;

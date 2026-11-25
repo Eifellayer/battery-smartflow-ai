@@ -443,6 +443,8 @@
   "price_preview_discharge_planned": "Discharging planned",
   "price_preview_discharge_possible": "Discharging possible",
   "price_preview_discharge_requested": "Discharge requested",
+  "price_preview_battery_discharging": "Discharging now (battery side)",
+  "price_preview_member_discharging": "Discharging now (measured AC output)",
   "price_preview_opportunities": "Next possible discharge windows",
   "price_preview_schedule": "Next planned discharge windows",
   "price_preview_opportunity_help": "The price is suitable. The controller decides whether to discharge based on household demand, charge level and protection limits.",

@@ -69,8 +69,10 @@ from custom_components.battery_smartflow_ai.core.models import (
 from custom_components.battery_smartflow_ai.coordinator import (
     ZendureSmartFlowCoordinator,
     _discharge_price_plan,
+    _group_discharge_display,
     _native_battery_power_totals,
 )
+from custom_components.battery_smartflow_ai.group_feedback import GroupFeedback
 
 # The coordinator only needs the Store adapter as a type here. Let the store
 # contract tests install their own controllable FakeHAStore implementation.
@@ -105,6 +107,30 @@ def test_discharge_price_plan_lists_all_suitable_future_intervals():
     assert _discharge_price_plan(intervals[1:2], now, 0.49) == {
         "status": "no_price_forecast",
     }
+
+
+def test_group_discharge_display_uses_fresh_pack_data_when_idle_controller_is_missing():
+    now = datetime(2026, 11, 25, 7, 50, tzinfo=timezone.utc)
+    empty = MeasuredValue.absent(ValueValidity.MISSING)
+    pack = SimpleNamespace(discharge_power_w=MeasuredValue.available(484, observed_at=now))
+    member = SimpleNamespace(ac_output_power_w=empty, discharge_power_w=empty, packs=[pack])
+    targets = {"hyper": {"direction": "idle", "power_w": 0},
+               "sf800": {"direction": "discharge", "power_w": -498}}
+
+    assert _group_discharge_display(now, targets, {"sf800": member}, None) == {
+        "group_discharge_requested": True, "observed_group_battery_discharge_w": 484,
+    }
+    assert _group_discharge_display(now, targets, {"sf800": member}, GroupFeedback(0, 465, 5)) == {
+        "group_discharge_requested": True, "observed_group_output_w": 465,
+    }
+    member.ac_output_power_w = MeasuredValue.available(463, observed_at=now)
+    assert _group_discharge_display(now, targets, {"sf800": member}, None) == {
+        "group_discharge_requested": True, "observed_member_output_w": 463,
+    }
+    assert _group_discharge_display(now + timedelta(seconds=31), targets, {"sf800": member}, None) == {
+        "group_discharge_requested": True,
+    }
+    assert _group_discharge_display(now, {"hyper": targets["hyper"]}, {"sf800": member}, None) == {}
 
 
 def _device_state(charge: float | None, discharge: float | None):

@@ -459,6 +459,8 @@
   "price_preview_discharge_planned": "Entladen geplant",
   "price_preview_discharge_possible": "Entladen möglich",
   "price_preview_discharge_requested": "Entladung angefordert",
+  "price_preview_battery_discharging": "Entlädt gerade (Akkuseite)",
+  "price_preview_member_discharging": "Entlädt gerade (gemessener AC-Ausgang)",
   "price_preview_opportunities": "Nächste mögliche Entladefenster",
   "price_preview_schedule": "Nächste geplante Entladefenster",
   "price_preview_opportunity_help": "Der Preis passt. Ob der Akku entlädt, entscheidet die Regelung im jeweiligen Zeitraum anhand von Hausverbrauch, Ladezustand und Schutzgrenzen.",

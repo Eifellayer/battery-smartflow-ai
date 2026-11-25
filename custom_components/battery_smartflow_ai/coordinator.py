@@ -447,6 +447,51 @@ def _group_member_power_limits(
     return limits
 
 
+def _group_discharge_display(
+    now: datetime, targets: Mapping[str, Any], states: Mapping[str, Any],
+    feedback: GroupFeedback | None,
+) -> dict[str, Any]:
+    """Describe accepted discharge and fresh measurements without changing control."""
+
+    active_members = [
+        device_id for device_id, target in targets.items()
+        if isinstance(target, Mapping) and target.get("direction") == "discharge"
+        and _to_float(target.get("power_w"), 0.0) < 0
+    ]
+    if not active_members:
+        return {}
+    result = {"group_discharge_requested": True}
+    if feedback is not None and feedback.output_w >= 30:
+        return {**result, "observed_group_output_w": round(feedback.output_w)}
+
+    def recent_power(measurement) -> float | None:
+        if measurement is None or not measurement.valid or measurement.observed_at is None:
+            return None
+        watts = _to_float(measurement.value)
+        age = (dt_util.as_utc(now) - dt_util.as_utc(measurement.observed_at)).total_seconds()
+        if watts is None or not math.isfinite(watts) or watts < 0 or not 0 <= age <= 30:
+            return None
+        return watts
+
+    ac_total = battery_total = 0.0
+    for member in active_members:
+        state = states.get(member)
+        if state is None:
+            continue
+        ac_total += recent_power(state.ac_output_power_w) or 0.0
+        battery = recent_power(state.discharge_power_w)
+        if not battery:
+            battery = sum(
+                recent_power(pack.discharge_power_w) or 0.0 for pack in state.packs
+            )
+        battery_total += battery
+    if ac_total >= 30:
+        result["observed_member_output_w"] = round(ac_total)
+    elif battery_total >= 30:
+        result["observed_group_battery_discharge_w"] = round(battery_total)
+    return result
+
+
 def _native_battery_power_totals(states) -> tuple[float, float] | None:
     """Return complete native charge/discharge totals across main systems."""
 
@@ -11582,8 +11627,11 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "economics": economic_plan,
                 "price_forecast": price_preview,
             }
-            if next_action_state == "discharging_active" and group_feedback is not None:
-                details["operation_plan"]["observed_group_output_w"] = round(group_feedback.output_w)
+            if group_active and getattr(native_runtime, "control_enabled", False) and not is_passthrough:
+                details["operation_plan"].update(_group_discharge_display(
+                    now, self._persist.get("group_control_last_targets", {}),
+                    native_runtime.fresh_device_state_map(), group_feedback,
+                ))
             if economic_plan and economic_plan["status"] == "active":
                 for direction, field in (
                     ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh")
