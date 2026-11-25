@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections.abc import Sequence
@@ -55,6 +56,7 @@ from .const import (
     CONF_ADDITIONAL_BATTERY_DISCHARGE_ENTITY,
     CONF_BATTERY_GROUPS,
     CONF_ENERGY_SCOPES,
+    CONF_NATIVE_ZENDURE_DEVICE_SETUPS,
     CONF_NATIVE_ZENDURE_SELECTED_DEVICE,
     CONF_DEVICE_PROFILE,
     CONF_PROFILE_OVERRIDES,
@@ -161,6 +163,11 @@ from .hardware.shelly_3em import (
     async_read_shelly_3em_power,
 )
 from .forecast import async_build_forecast_summary
+from .core.economic_schedule import EconomicBattery, plan_economic_dispatch, plan_split_economic_dispatch
+from .economic_planning import economic_slots, import_price_preview
+from .group_grid_charging import (
+    eligible_grid_charge_members, member_grid_charge_policy, summer_grid_charge_budget_kwh,
+)
 from .learned_planning import (
     LearningSample,
     LearningChargePowerSample,
@@ -240,6 +247,9 @@ from .device_command import DeviceCommandBuilder, clamp_number_power_request
 from .command_execution_state import confirmed_command_state_updates
 from .adapters.home_assistant.clock import HomeAssistantClock
 from .adapters.home_assistant.state_store import HomeAssistantStateStore
+from .battery_groups import enabled_group_members, limit_group_power, reconcile_group_config, GROUP_OBJECTIVE_NEAR_ZERO
+from .group_feedback import GroupFeedback, RegulationQuality
+from .native_device_setup import native_device_profile_key
 from .v5_migration import migrate_persisted_v47_state
 from .command_effectiveness import (
     CommandEffectivenessConfig,
@@ -281,6 +291,7 @@ from .market_price import (
     LegacyImportForecastAdapter,
     MarketPrice,
     MarketPriceDirection,
+    MarketPricePoint,
     MarketPriceSourceAdapter,
     NumericPriceNormalizer,
     daily_price_statistics,
@@ -376,6 +387,140 @@ def _to_float(v: Any, default: float | None = None) -> float | None:
         return float(s)
     except Exception:
         return default
+
+
+def _public_group_device_id(device_id: str) -> str:
+    return "ZD_DEVICE_" + hashlib.sha256(
+        f"bsfai:DEVICE:{device_id}".encode()
+    ).hexdigest()[:12]
+
+
+def _discharge_price_plan(
+    points: Sequence[MarketPricePoint], now: datetime, *thresholds: float | None
+) -> dict[str, Any]:
+    """Show price opportunities without assuming future load, SoC or permissions."""
+
+    usable_thresholds = [
+        value for value in thresholds if value is not None and math.isfinite(value)
+    ]
+    future_points = sorted(
+        (point for point in points if point.start > now and math.isfinite(point.price)),
+        key=lambda point: point.start,
+    )
+    if not usable_thresholds or not future_points:
+        return {"status": "no_price_forecast"}
+    threshold = min(usable_thresholds)
+    windows = []
+    # The live rule also checks the average of prices still ahead. Estimate
+    # that comparison separately at the beginning of each future interval.
+    remaining_total = 0.0
+    for count, point in enumerate(reversed(future_points), start=1):
+        remaining_total += point.price
+        if point.price >= threshold and (count == 1 or point.price > remaining_total / count):
+            windows.append({
+                "start": point.start.isoformat(), "end": point.end.isoformat(), "price": point.price,
+            })
+    if not windows:
+        return {"status": "no_matching_price"}
+    windows.reverse()
+    return {
+        "status": "price_opportunity",
+        **windows[0],
+        "windows": windows,
+    }
+
+
+def _charge_price_opportunities(
+    points: Sequence[MarketPricePoint], now: datetime, *thresholds: float | None,
+) -> list[dict[str, Any]]:
+    """Show periods below the current price criteria for optional AC charging."""
+
+    threshold = max(
+        (value for value in thresholds if value is not None and math.isfinite(value)),
+        default=-math.inf,
+    )
+    horizon = now + timedelta(hours=24)
+    return [
+        {"start": point.start.isoformat(), "end": point.end.isoformat(), "price": point.price}
+        for point in points
+        if now < point.start < horizon and math.isfinite(point.price) and point.price <= threshold
+    ]
+
+
+def _group_member_power_limits(
+    snapshot: Mapping[str, Any], intent_metadata: Any, *,
+    member_limit_w: float | None = None, charging: bool = False,
+) -> dict[str, float]:
+    """Keep the member's own limits, including active controller protection."""
+
+    limits = {
+        "max_charge_w": float(snapshot["max_charge_w"]),
+        "max_discharge_w": float(snapshot["max_discharge_w"]),
+    }
+    if isinstance(intent_metadata, Mapping):
+        for field, key in (
+            ("max_charge_w", "group_selected_max_input_w"),
+            ("max_discharge_w", "group_selected_max_output_w"),
+        ):
+            limit = _to_float(intent_metadata.get(key))
+            if limit is not None:
+                limits[field] = min(limits[field], max(0.0, limit))
+    if member_limit_w is not None:
+        field = "max_charge_w" if charging else "max_discharge_w"
+        limits[field] = min(limits[field], max(0.0, member_limit_w))
+    return limits
+
+
+def _group_power_display(
+    now: datetime, targets: Mapping[str, Any], states: Mapping[str, Any],
+    feedback: GroupFeedback | None, *, direction: str,
+) -> dict[str, Any]:
+    """Describe accepted targets and fresh measurements without changing control."""
+
+    charging = direction == "charge"
+    sign = 1 if charging else -1
+    ac_side = "input" if charging else "output"
+    active_members = [
+        device_id for device_id, target in targets.items()
+        if isinstance(target, Mapping) and target.get("direction") == direction
+        and sign * _to_float(target.get("power_w"), 0.0) > 0
+    ]
+    if not active_members:
+        return {}
+    result = {f"group_{direction}_requested": True}
+    if feedback is not None:
+        power = feedback.input_w if charging else feedback.output_w
+        if power >= 30:
+            return {**result, f"observed_group_{ac_side}_w": round(power)}
+
+    def recent_power(measurement) -> float | None:
+        if measurement is None or not measurement.valid or measurement.observed_at is None:
+            return None
+        watts = _to_float(measurement.value)
+        age = (dt_util.as_utc(now) - dt_util.as_utc(measurement.observed_at)).total_seconds()
+        if watts is None or not math.isfinite(watts) or watts < 0 or not 0 <= age <= 30:
+            return None
+        return watts
+
+    ac_total = battery_total = 0.0
+    ac_field = f"ac_{ac_side}_power_w"
+    battery_field = f"{direction}_power_w"
+    for member in active_members:
+        state = states.get(member)
+        if state is None:
+            continue
+        ac_total += recent_power(getattr(state, ac_field)) or 0.0
+        battery = recent_power(getattr(state, battery_field))
+        if not battery:
+            battery = sum(
+                recent_power(getattr(pack, battery_field)) or 0.0 for pack in state.packs
+            )
+        battery_total += battery
+    if ac_total >= 30:
+        result[f"observed_member_{ac_side}_w"] = round(ac_total)
+    elif battery_total >= 30:
+        result[f"observed_group_battery_{direction}_w"] = round(battery_total)
+    return result
 
 
 def _native_battery_power_totals(states) -> tuple[float, float] | None:
@@ -513,7 +658,6 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> dict[str, Any]:
         """Build a per-group proposal from current regulation, without writes."""
 
-        import hashlib
         from collections.abc import Sequence
 
         from .battery_groups import (
@@ -617,6 +761,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 offgrid_domains_by_device.setdefault(device_id, set()).add(
                     connection["load_domain_id"]
                 )
+        intent_metadata = getattr(strategy_intent, "metadata", None)
         devices = tuple(
             ShadowDevice(
                 device_id=device_id,
@@ -630,8 +775,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_soc_pct=float(snapshot["reserve_soc_pct"]),
                 maximum_soc_pct=float(snapshot["maximum_soc_pct"]),
                 capacity_kwh=snapshot["capacity_kwh"],
-                max_charge_w=float(snapshot["max_charge_w"]),
-                max_discharge_w=float(snapshot["max_discharge_w"]),
+                **_group_member_power_limits(
+                    snapshot, intent_metadata if device_id == selected_id else None
+                ),
                 circuit_ids=tuple(circuit_by_device.get(device_id, ())),
                 block_reasons=(
                     (
@@ -773,6 +919,22 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "writes_enabled": False,
                     "objective": objective,
                 }
+        group_limits = {}
+        if selected_group.get("control_enabled") is True and len(members) > 1:
+            group_limits = {
+                "group_max_charge_w": limit_group_power(
+                    self.entry.options, SETTING_MAX_CHARGE,
+                    sum(device.max_charge_w for device in devices),
+                ),
+                "group_max_discharge_w": limit_group_power(
+                    self.entry.options, SETTING_MAX_DISCHARGE,
+                    sum(device.max_discharge_w for device in devices),
+                ),
+            }
+            target = max(
+                -group_limits["group_max_discharge_w"],
+                min(target, group_limits["group_max_charge_w"]),
+            )
         lead_state = self._persist.get("group_control_lead_state")
         preferred_lead = (
             lead_state.get("device_id")
@@ -789,13 +951,8 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             balancing_policy=selected_group.get("balancing_policy", "energy_weighted"),
         )
         result_data = result.as_dict()
-        public_ids = {
-            item["device_id"]: "ZD_DEVICE_"
-            + hashlib.sha256(
-                f"bsfai:DEVICE:{item['device_id']}".encode()
-            ).hexdigest()[:12]
-            for item in snapshots
-        }
+        result_data.update(group_limits)
+        public_ids = {device_id: _public_group_device_id(device_id) for device_id in members}
         result_data["group_name"] = str(selected_group.get("name") or "")
         result_data["group_size"] = len(members)
         result_data["control_enabled"] = selected_group.get("control_enabled") is True
@@ -818,12 +975,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             item["device_id"] = public_ids.get(item["device_id"])
         missing_members = set(members).difference(snapshot_by_id)
         for device_id in sorted(missing_members):
-            public_id = "ZD_DEVICE_" + hashlib.sha256(
-                f"bsfai:DEVICE:{device_id}".encode()
-            ).hexdigest()[:12]
             result_data["devices"].append(
                 {
-                    "device_id": public_id,
+                    "device_id": public_ids[device_id],
                     "name": None,
                     "proposed_power_w": 0.0,
                     "effective_limit_w": 0.0,
@@ -834,6 +988,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result_data["status"] = "incomplete_inventory"
         if len(members) < 2 and result_data["status"] == "complete":
             result_data["status"] = "single_device_group"
+        if result_data["control_enabled"]:
+            result_data["dispatch_status"] = self._persist.get("group_control_status")
+            result_data["last_accepted_targets"] = {
+                public_ids[device_id]: target
+                for device_id, target in self._persist.get(
+                    "group_control_last_targets", {}
+                ).items()
+                if device_id in public_ids
+            }
+            pending = self._persist.get("group_control_handover_pending")
+            if isinstance(pending, Mapping) and pending.get("group_id") == selected_group_id:
+                result_data["handover_pending"] = {
+                    "group_id": selected_group_id,
+                    "devices": {
+                        public_ids[device_id]: target
+                        for device_id, target in pending.get("devices", {}).items()
+                        if device_id in public_ids
+                    },
+                }
+            else:
+                result_data["handover_pending"] = None
         return result_data
 
     def _stable_group_lead_device_id(
@@ -922,58 +1097,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         return selected_lead
 
-    def _native_group_max_output_w(
+    def _native_group_power_limit_w(
         self,
         runtime: Any,
         *,
-        selected_max_output_w: float,
+        setting: str,
+        selected_hardware_limit_w: float,
         reserve_soc_pct: float,
         maximum_soc_pct: float,
     ) -> float | None:
-        """Return the aggregate output capability for the active group.
-
-        ``None`` keeps the established single-device limit. In a productive
-        multi-device group the regulation target represents the group's total
-        power, so its ceiling is the sum of member capabilities rather than
-        the selected lead device's profile limit.
-        """
-
-        from .battery_groups import reconcile_group_config
-        from .const import CONF_BATTERY_GROUPS
+        """Sum hardware limits before applying the group-wide power setting."""
 
         selected_id = getattr(runtime, "selected_device_id", None)
-        if (
-            not bool(getattr(runtime, "control_enabled", False))
-            or not isinstance(selected_id, str)
-            or not selected_id
+        if not getattr(runtime, "control_enabled", False) or not isinstance(
+            selected_id, str
         ):
             return None
-        try:
-            groups = reconcile_group_config(
-                self.entry.options.get(CONF_BATTERY_GROUPS)
-            )["groups"]
-        except (TypeError, ValueError):
-            return None
-
-        selected_group = next(
-            (
-                group
-                for group in groups.values()
-                if selected_id in group.get("members", ())
-                and group.get("control_enabled") is True
-            ),
-            None,
+        members = enabled_group_members(
+            self.entry.options.get(CONF_BATTERY_GROUPS), selected_id
         )
-        if not isinstance(selected_group, Mapping):
+        if len(members) < 2:
             return None
-        members = selected_group.get("members", ())
-        if (
-            not isinstance(members, Sequence)
-            or isinstance(members, (str, bytes))
-            or len(members) < 2
-        ):
-            return None
-
         try:
             snapshots = runtime.shadow_allocation_snapshots(
                 reserve_soc_pct=reserve_soc_pct,
@@ -981,110 +1125,310 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except (AttributeError, TypeError, ValueError):
             return None
-        snapshot_by_id = {
-            item.get("device_id"): item
-            for item in snapshots
+        limits = {
+            item.get("device_id"): item for item in snapshots
             if isinstance(item, Mapping)
         }
-        if any(device_id not in snapshot_by_id for device_id in members):
+        if any(member not in limits for member in members):
             return None
 
-        total_limit_w = 0.0
-        for device_id in members:
-            member_limit_w = _to_float(
-                snapshot_by_id[device_id].get("max_discharge_w"), 0.0
-            )
-            if member_limit_w is None or not math.isfinite(member_limit_w):
+        field = "max_charge_w" if setting == SETTING_MAX_CHARGE else "max_discharge_w"
+        total = 0.0
+        for member in members:
+            limit = _to_float(limits[member].get(field), 0.0)
+            if limit is None or not math.isfinite(limit):
                 return None
-            if device_id == selected_id:
-                member_limit_w = min(
-                    member_limit_w,
-                    max(0.0, float(selected_max_output_w)),
-                )
-            total_limit_w += max(0.0, member_limit_w)
-        return total_limit_w
+            if member == selected_id:
+                limit = min(limit, selected_hardware_limit_w)
+            total += max(0.0, limit)
+        return limit_group_power(self.entry.options, setting, total)
 
-    def _native_group_max_input_w(
-        self,
-        runtime: Any,
-        *,
-        selected_max_input_w: float,
-        reserve_soc_pct: float,
-        maximum_soc_pct: float,
-    ) -> float | None:
-        """Return the aggregate AC input capability for the active group.
+    async def _economic_group_plan(
+        self, ctx, runtime, *, current_ac_input_w, load_model,
+        learned_ready, forecast_base_load_w, selected_capacity_kwh,
+        current_net_load_w, grid_charge_policy=None,
+    ) -> tuple[dict[str, Any] | None, float | None]:
+        """Plan Automatic near-zero dispatch and keep incomplete input in preview."""
 
-        Group input targets are aggregate values. Keep the selected device's
-        configured/runtime cap, then add each other member's own AC input
-        capability. The group allocator still applies every member and circuit
-        limit before issuing device commands.
-        """
+        from .const import CONF_ELECTRICAL_TOPOLOGY
+        from .electrical_topology import normalize_electrical_topology
+        from .shadow_allocator import ShadowDevice, allocate_staged_efficiency
 
-        from .battery_groups import reconcile_group_config
-        from .const import CONF_BATTERY_GROUPS
-
-        selected_id = getattr(runtime, "selected_device_id", None)
-        if (
-            not bool(getattr(runtime, "control_enabled", False))
-            or not isinstance(selected_id, str)
-            or not selected_id
-        ):
-            return None
+        if ctx.ai_mode != AI_MODE_AUTOMATIC or not getattr(runtime, "control_enabled", False):
+            return None, None
         try:
-            groups = reconcile_group_config(
-                self.entry.options.get(CONF_BATTERY_GROUPS)
-            )["groups"]
+            groups = reconcile_group_config(self.entry.options.get(CONF_BATTERY_GROUPS))["groups"]
+        except (TypeError, ValueError):
+            return None, None
+        group_id, group = next(
+            ((key, group) for key, group in groups.items()
+             if group["control_enabled"] and runtime.selected_device_id in group["members"]),
+            (None, None),
+        )
+        if group is None or group["objective"] != GROUP_OBJECTIVE_NEAR_ZERO or len(group["members"]) < 2:
+            return None, None
+        if not ctx.grid_sensor_valid or not ctx.pv_sensor_valid:
+            return {"status": "measurement_missing"}, None
+        if not ctx.soc_limits_valid or not ctx.power_limits_valid or ctx.soc_min >= ctx.soc_max:
+            return {"status": "device_data_missing"}, None
+        scope = self._selected_energy_scope(self.entry)
+        active_scope_groups = {
+            key for key in scope.get("group_ids", ()) if groups.get(key, {}).get("control_enabled")
+        }
+        if active_scope_groups != {group_id} or scope.get("grid_mode") not in {
+            ENERGY_GRID_MODE_SIGNED, ENERGY_GRID_MODE_SPLIT,
+        }:
+            return {"status": "topology_missing"}, None
+        try:
+            topology = normalize_electrical_topology(self.entry.options.get(CONF_ELECTRICAL_TOPOLOGY))
+        except (TypeError, ValueError):
+            return {"status": "topology_missing"}, None
+        circuits: dict[str, list[str]] = {}
+        for connection in topology["connections"]:
+            if connection["kind"] == "grid":
+                circuits.setdefault(connection["device_id"], []).append(connection["circuit_id"])
+        members = set(group["members"])
+        if not members.issubset(circuits):
+            return {"status": "topology_missing"}, None
+        snapshots = {
+            item["device_id"]: item
+            for item in runtime.shadow_allocation_snapshots(
+                reserve_soc_pct=ctx.soc_min, maximum_soc_pct=ctx.soc_max,
+            )
+            if item["device_id"] in members
+        }
+        if set(snapshots) != members:
+            return {"status": "device_data_missing"}, None
+        capacity = stored = 0.0
+        devices = []
+        batteries = []
+        summer_pv_buffers = {}
+        for device_id, item in snapshots.items():
+            if (
+                not item["available"] or not item["configured"] or not item["supported"]
+                or item["hems_blocked"] or item["protected"]
+            ):
+                return {"status": "device_data_missing"}, None
+            soc = _to_float(item["soc_pct"])
+            device_capacity = _to_float(item["capacity_kwh"])
+            if device_capacity is None and device_id == runtime.selected_device_id:
+                device_capacity = selected_capacity_kwh
+            if (
+                soc is None or not 0 <= soc <= 100 or device_capacity is None
+                or not math.isfinite(device_capacity) or device_capacity <= 0
+            ):
+                return {"status": "device_data_missing"}, None
+            reserve, maximum = float(item["reserve_soc_pct"]), float(item["maximum_soc_pct"])
+            if not 0 <= reserve < maximum <= 100:
+                return {"status": "device_data_missing"}, None
+            capacity += device_capacity * (maximum - reserve) / 100.0
+            stored += device_capacity * max(0.0, min(maximum, soc) - reserve) / 100.0
+            input_limit = float(item["max_charge_w"])
+            if device_id == runtime.selected_device_id:
+                input_limit = min(input_limit, current_ac_input_w)
+            # Compute wiring ceilings at a feasible SoC. The cost planner
+            # separately accounts for actual stored energy in every interval.
+            devices.append(ShadowDevice(
+                device_id=device_id, name=device_id, available=True, configured=True,
+                supported=True, hems_blocked=False, protected=False,
+                soc_pct=(reserve + maximum) / 2, reserve_soc_pct=reserve,
+                maximum_soc_pct=maximum, capacity_kwh=device_capacity,
+                max_charge_w=input_limit, max_discharge_w=float(item["max_discharge_w"]),
+                circuit_ids=tuple(circuits[device_id]),
+            ))
+            if grid_charge_policy:
+                spread, efficiency, summer_pv_buffer_pct = grid_charge_policy[device_id]
+                batteries.append(EconomicBattery(
+                    device_id, device_capacity * (maximum - reserve) / 100.0,
+                    device_capacity * max(0.0, min(maximum, soc) - reserve) / 100.0,
+                    input_limit, float(item["max_discharge_w"]), efficiency, spread, True,
+                ))
+                if ctx.season == "summer" and summer_pv_buffer_pct > 0:
+                    summer_pv_buffers[device_id] = (device_capacity, soc, maximum, summer_pv_buffer_pct)
+        charge_ceiling = limit_group_power(
+            self.entry.options, SETTING_MAX_CHARGE, sum(device.max_charge_w for device in devices),
+        )
+        discharge_ceiling = limit_group_power(
+            self.entry.options, SETTING_MAX_DISCHARGE, sum(device.max_discharge_w for device in devices),
+        )
+        max_input_w = allocate_staged_efficiency(charge_ceiling, devices, topology).proposed_power_w
+        max_output_w = allocate_staged_efficiency(-discharge_ceiling, devices, topology).proposed_power_w
+
+        forecast = ctx.forecast
+        solar_intervals = getattr(forecast, "power_intervals", ())
+        market = ctx.import_market_price
+        if market is None:
+            return {"status": "price_data_missing"}, None
+        slots = economic_slots(
+            ctx.now, market, load_model=load_model if learned_ready else None,
+            forecast_base_load_w=forecast_base_load_w,
+            current_net_load_w=current_net_load_w, solar_intervals=solar_intervals,
+        )
+        if not slots:
+            return {"status": "price_data_missing"}, None
+        # With PV connected, a daily total without timestamps cannot safely
+        # distinguish production before a price peak from production after it.
+        has_solar_data = any(
+            start + timedelta(hours=duration) > ctx.now and start < slots[-1].end
+            for start, duration, _ in solar_intervals
+        )
+        status = (
+            "load_history_missing" if not learned_ready
+            else "solar_forecast_missing" if not has_solar_data
+            else "active"
+        )
+        export = ctx.export_market_price
+        export_price = export.current_price if export and export.valid else 0.0
+        # A timed PV forecast lets the summer plan credit solar production
+        # before the expensive slots. Without it, only free or negative grid
+        # prices may open a summer purchase window for the buffered device.
+        summer_offer = summer_pv_buffers and (
+            has_solar_data or any(slot.price <= 0 for slot in slots)
+        )
+        split_fallback = bool(batteries and status != "active" and (
+            ctx.season == "winter" or summer_offer
+        ))
+        dispatch_active = status == "active" or split_fallback
+        summer_grid_charge = []
+        if batteries:
+            planned_batteries = []
+            for battery in batteries:
+                buffered = summer_pv_buffers.get(battery.device_id)
+                if buffered is None:
+                    planned_batteries.append(replace(battery, allow_grid_charge=(
+                        status == "active" or split_fallback and ctx.season == "winter"
+                    )))
+                    continue
+
+                capacity_kwh, soc_pct, maximum_soc_pct, extra_buffer_pct = buffered
+                expected_solar_input = sum(
+                    min(-slot.net_load_kwh, battery.max_input_w * slot.hours / 1000)
+                    for slot in slots if slot.net_load_kwh < 0
+                )
+                if not has_solar_data:
+                    # An untimed estimate cannot tell us which load solar will
+                    # cover. It can still tell us to leave more room in the battery.
+                    daily_solar_kwh = sum(
+                        max(0.0, _to_float(getattr(forecast, key, None), 0.0))
+                        for key in ("remaining_today_kwh", "tomorrow_kwh")
+                    )
+                    expected_solar_input = max(expected_solar_input, daily_solar_kwh)
+                budget = summer_grid_charge_budget_kwh(
+                    capacity_kwh=capacity_kwh, soc_pct=soc_pct, maximum_soc_pct=maximum_soc_pct,
+                    extra_buffer_pct=extra_buffer_pct, expected_solar_input_kwh=expected_solar_input,
+                    round_trip_efficiency=battery.round_trip_efficiency,
+                )
+                planned_batteries.append(replace(
+                    battery, allow_grid_charge=dispatch_active,
+                    grid_charge_budget_kwh=budget,
+                    max_grid_purchase_price=None if has_solar_data else 0.0,
+                ))
+                summer_grid_charge.append({
+                    "name": str(snapshots[battery.device_id]["name"]),
+                    "forecast_surplus_kwh": round(expected_solar_input, 3),
+                    "extra_buffer_pct": extra_buffer_pct,
+                    "grid_budget_kwh": round(budget, 3),
+                })
+            schedule = await self.hass.async_add_executor_job(partial(
+                plan_split_economic_dispatch, slots, planned_batteries,
+                max_input_w=max_input_w, max_output_w=max_output_w, export_price=export_price,
+            ))
+        else:
+            schedule = await self.hass.async_add_executor_job(partial(
+                plan_economic_dispatch, slots,
+                usable_capacity_kwh=capacity, stored_kwh=stored, max_input_w=max_input_w,
+                max_output_w=max_output_w, export_price=export_price,
+                margin_pct=ctx.profit_margin_pct, allow_grid_charge=status == "active",
+            ))
+        if not schedule.dispatch:
+            return {"status": "device_data_missing"}, None
+        first = schedule.dispatch[0]
+        summary = {
+            "status": "active_partial_forecast" if split_fallback else status,
+            "reserved_kwh": round(schedule.stored_for_later_kwh, 3),
+            "available_kwh": round(schedule.available_now_kwh, 3),
+            "top_up_kwh": round(schedule.grid_top_up_kwh, 3) if dispatch_active else None,
+            "horizon_end": slots[-1].end.isoformat(),
+        }
+        if summer_grid_charge:
+            summary["summer_grid_charge"] = summer_grid_charge
+        for field, devices_field in (
+            ("grid_charge_kwh", "grid_charge_by_device"), ("discharge_kwh", "discharge_by_device"),
+        ):
+            windows = []
+            for entry in schedule.dispatch:
+                energy = getattr(entry, field)
+                if energy < 0.005:
+                    continue
+                window = {
+                    "start": entry.slot.start.isoformat(), "end": entry.slot.end.isoformat(),
+                    "price": entry.slot.price, "energy_kwh": round(energy, 3),
+                }
+                if batteries:
+                    window["members"] = sorted(
+                        str(snapshots[key]["name"]) for key, kwh in getattr(entry, devices_field).items()
+                        if kwh >= 0.001
+                    )
+                windows.append(window)
+            if windows:
+                if dispatch_active:
+                    summary[field] = {**windows[0], "windows": windows}
+                else:
+                    summary[field] = windows[0]
+        # Ignore sub-Wh targets. Avoid division by a nearly elapsed slot.
+        if not dispatch_active or first.slot.hours * 3600 < 10:
+            return summary, 0.0 if dispatch_active else None
+        power_w = (first.grid_charge_kwh - first.discharge_kwh) * 1000 / first.slot.hours
+        if batteries:
+            member_energy = first.grid_charge_by_device if power_w > 0 else first.discharge_by_device
+            summary["_member_limits_w"] = {
+                device_id: energy * 1000 / first.slot.hours
+                for device_id, energy in member_energy.items()
+            }
+        return summary, power_w
+
+    def _group_feedback_sample(self, runtime, *, now, grid_age_s, grid_valid):
+        """Use only complete, recent group AC measurements, never DC battery flow."""
+        if not grid_valid or grid_age_s is None or not 0 <= grid_age_s <= 15:
+            return None
+        if not getattr(runtime, "control_enabled", False):
+            return None
+        selected = getattr(runtime, "selected_device_id", None)
+        try:
+            groups = reconcile_group_config(self.entry.options.get(CONF_BATTERY_GROUPS))["groups"]
+            group = next((g for g in groups.values() if g["control_enabled"]
+                          and selected in g["members"]), None)
         except (TypeError, ValueError):
             return None
-
-        selected_group = next(
-            (
-                group
-                for group in groups.values()
-                if selected_id in group.get("members", ())
-                and group.get("control_enabled") is True
-            ),
-            None,
-        )
-        if not isinstance(selected_group, Mapping):
+        if not group or group.get("objective") != GROUP_OBJECTIVE_NEAR_ZERO or len(group["members"]) < 2:
             return None
-        members = selected_group.get("members", ())
-        if (
-            not isinstance(members, Sequence)
-            or isinstance(members, (str, bytes))
-            or len(members) < 2
-        ):
-            return None
-
-        try:
-            snapshots = runtime.shadow_allocation_snapshots(
-                reserve_soc_pct=reserve_soc_pct,
-                maximum_soc_pct=maximum_soc_pct,
-            )
-        except (AttributeError, TypeError, ValueError):
-            return None
-        snapshot_by_id = {
-            item.get("device_id"): item
-            for item in snapshots
-            if isinstance(item, Mapping)
-        }
-        if any(device_id not in snapshot_by_id for device_id in members):
-            return None
-
-        total_limit_w = 0.0
-        for device_id in members:
-            member_limit_w = _to_float(
-                snapshot_by_id[device_id].get("max_charge_w"), 0.0
-            )
-            if member_limit_w is None or not math.isfinite(member_limit_w):
+        states = runtime.fresh_device_state_map()
+        total_in = total_out = 0.0
+        for member in group["members"]:
+            state = states.get(member)
+            if state is None:
                 return None
-            if device_id == selected_id:
-                member_limit_w = min(
-                    member_limit_w,
-                    max(0.0, float(selected_max_input_w)),
-                )
-            total_limit_w += max(0.0, member_limit_w)
-        return total_limit_w
+            for field in ("ac_input_power_w", "ac_output_power_w"):
+                measured = getattr(state, field, None)
+                if measured is None or not measured.valid or measured.observed_at is None:
+                    return None
+                value = _to_float(measured.value, None)
+                age = (dt_util.as_utc(now) - dt_util.as_utc(measured.observed_at)).total_seconds()
+                if value is None or not math.isfinite(value) or value < 0 or not 0 <= age <= 30:
+                    return None
+                # A recent zero may legitimately be event-driven. For active
+                # flow, require tighter alignment with the grid observation.
+                if value > 30 and (age > 15 or abs(age - grid_age_s) > 10):
+                    return None
+                if field == "ac_input_power_w":
+                    total_in += value
+                else:
+                    total_out += value
+        mono = self._clock.monotonic()
+        previous = getattr(self, "_group_feedback_last_mono", None)
+        self._group_feedback_last_mono = mono
+        elapsed = 7.0 if previous is None else max(0.0, min(7.0, mono - previous))
+        return GroupFeedback(total_in, total_out, elapsed)
 
     def _productive_group_targets(
         self,
@@ -1280,18 +1624,23 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             getattr(strategy_intent, "requested_mode", "") or ""
         ).lower()
         requested_power_value = _to_float(requested_power, None)
-        if (
-            target_w > 0
-            and requested_mode == "input"
-            and requested_power_value is not None
-        ):
-            target_w = abs(requested_power_value)
-        elif (
-            target_w < 0
-            and requested_mode == "output"
-            and requested_power_value is not None
-        ):
-            target_w = -abs(requested_power_value)
+        # Near-zero already has a closed-loop technical controller with
+        # deadband, adaptive ramp and fast load-drop handling. Dispatch must
+        # distribute that final command, not replace it with the economic
+        # strategy request (which can oscillate as the grid crosses zero).
+        if objective != GROUP_OBJECTIVE_NEAR_ZERO:
+            if (
+                target_w > 0
+                and requested_mode == "input"
+                and requested_power_value is not None
+            ):
+                target_w = abs(requested_power_value)
+            elif (
+                target_w < 0
+                and requested_mode == "output"
+                and requested_power_value is not None
+            ):
+                target_w = -abs(requested_power_value)
         if objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
             if not scope.get("price_entity"):
                 return ("group_ups_price_unavailable", None)
@@ -1358,20 +1707,63 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else "group_pv_storage_grid_unavailable"
                 )
                 return (reason, None)
+        if (
+            objective == GROUP_OBJECTIVE_NEAR_ZERO
+            and target_w < 0
+            and not str(command.reason).startswith("group_feedback_")
+            and getattr(strategy_intent, "intent", None) in {
+                "cover_deficit", "peak_discharge", "arbitrage_discharge", "manual_discharge",
+            }
+        ):
+            # Do not integrate the same residual import repeatedly while the
+            # previous group command is still settling. Export corrections
+            # and all lower safety/strategy limits remain immediately effective.
+            prior = self._persist.get("group_control_last_targets", {})
+            if isinstance(prior, Mapping) and set(prior) == set(members):
+                prior_output = sum(
+                    max(0.0, -float(item.get("power_w", 0.0)))
+                    for item in prior.values()
+                    if isinstance(item, Mapping)
+                )
+                prior_charge = sum(
+                    max(0.0, float(item.get("power_w", 0.0)))
+                    for item in prior.values()
+                    if isinstance(item, Mapping)
+                )
+                if prior_charge == 0.0 and -target_w > prior_output:
+                    if grid_import_w is None or grid_export_w is None:
+                        return ("group_near_zero_grid_unavailable", None)
+                    residual = float(grid_import_w) - float(grid_export_w)
+                    if not math.isfinite(residual):
+                        return ("group_near_zero_grid_unavailable", None)
+                    now = dt_util.as_utc(self._clock.utc_now())
+                    changed_at = dt_util.parse_datetime(str(self._persist.get("group_control_target_changed_at") or ""))
+                    settling = changed_at is not None and 0 <= (
+                        now - dt_util.as_utc(changed_at)
+                    ).total_seconds() < 12.0
+                    if settling or residual <= 25.0:
+                        target_w = -prior_output
+                    else:
+                        # Small positive corrections use the instantaneous
+                        # residual, not the delayed history or a full step.
+                        # Large real load jumps can still use the normal ramp.
+                        target_w = -min(-target_w, prior_output + max(0.0, residual - 10.0))
+        if target_w > 0:
+            target_w = limit_group_power(self.entry.options, SETTING_MAX_CHARGE, target_w)
+        elif target_w < 0:
+            target_w = -limit_group_power(
+                self.entry.options, SETTING_MAX_DISCHARGE, -target_w
+            )
         device_circuits = (
             offgrid_circuits_by_device
             if objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE and target_w < 0
             else grid_circuits_by_device
         )
-        intent_metadata = getattr(strategy_intent, "metadata", {})
-        selected_max_discharge_w = (
-            _to_float(
-                intent_metadata.get("soc_min_discharge_taper_max_output_w"),
-                None,
-            )
-            if isinstance(intent_metadata, Mapping)
-            else None
-        )
+        member_limits = None
+        if isinstance(intent_metadata, Mapping) and intent_metadata.get("group_economic_direction") == (
+            "input" if target_w > 0 else "output"
+        ):
+            member_limits = intent_metadata.get("group_economic_member_limits_w")
         devices = tuple(
             ShadowDevice(
                 device_id=device_id,
@@ -1385,15 +1777,11 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reserve_soc_pct=float(snapshot_by_id[device_id]["reserve_soc_pct"]),
                 maximum_soc_pct=float(snapshot_by_id[device_id]["maximum_soc_pct"]),
                 capacity_kwh=snapshot_by_id[device_id]["capacity_kwh"],
-                max_charge_w=float(snapshot_by_id[device_id]["max_charge_w"]),
-                max_discharge_w=(
-                    min(
-                        float(snapshot_by_id[device_id]["max_discharge_w"]),
-                        max(0.0, selected_max_discharge_w),
-                    )
-                    if device_id == selected_id
-                    and selected_max_discharge_w is not None
-                    else float(snapshot_by_id[device_id]["max_discharge_w"])
+                **_group_member_power_limits(
+                    snapshot_by_id[device_id],
+                    intent_metadata if device_id == selected_id else None,
+                    member_limit_w=(member_limits.get(device_id, 0.0) if isinstance(member_limits, Mapping) else None),
+                    charging=target_w > 0,
                 ),
                 circuit_ids=tuple(device_circuits[device_id]),
             )
@@ -1429,7 +1817,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             device_id = allocation_item["device_id"]
             if device_id not in members:
                 continue
-            power_w = float(allocation_item["proposed_power_w"])
+            # Native transports encode integer watts. Floor rather than round
+            # up so the allocator's member and circuit limits remain intact.
+            power_w = float(math.floor(max(0.0, float(allocation_item["proposed_power_w"]))))
             if allocation.direction == "charge":
                 mode = "input"
                 input_w, output_w = power_w, 0.0
@@ -1472,6 +1862,23 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 ),
             )
+        # The builder's last_*_limit metadata describes the whole group.
+        # Passing it to an idle member forces an atomic zero write on every
+        # cycle even when that member is already idle.
+        previous = self._persist.get("group_control_last_targets", {})
+        previous = previous if isinstance(previous, Mapping) else {}
+        for device_id, item in targets.items():
+            old = previous.get(device_id)
+            if isinstance(old, Mapping):
+                old_power = float(old.get("power_w", 0.0))
+                targets[device_id] = replace(
+                    item,
+                    metadata={
+                        **item.metadata,
+                        "last_input_limit_w": max(0.0, old_power),
+                        "last_output_limit_w": max(0.0, -old_power),
+                    },
+                )
         return ("group_control_active", targets)
 
     def __init__(
@@ -1498,8 +1905,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             price_input_profile(self.price_currency).step
         )
 
+        active_profile_key = native_device_profile_key(
+            entry.options.get(CONF_NATIVE_ZENDURE_DEVICE_SETUPS),
+            entry.options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE),
+        )
         self.device_profile_key = (
-            entry.options.get(CONF_DEVICE_PROFILE)
+            active_profile_key
+            or entry.options.get(CONF_DEVICE_PROFILE)
             or entry.data.get(CONF_DEVICE_PROFILE)
             or DEFAULT_DEVICE_PROFILE
         )
@@ -4118,6 +4530,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for device_id in members:
             await runtime.async_execute_device_command(stop, device_id=device_id)
         self._persist["group_control_last_targets"] = {}
+        self._persist.pop("group_control_target_changed_at", None)
         self._persist.pop("group_control_handover_pending", None)
 
     async def _execute_device_command(
@@ -4142,6 +4555,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if group_plan is None:
                     self._persist.pop("group_control_handover_pending", None)
+                    self._persist.pop("group_control_status", None)
+                    self._persist.pop("group_control_last_targets", None)
+                    self._persist.pop("group_control_target_changed_at", None)
                     previous_members = self._persist.get("group_control_members", ())
                     selected_id = getattr(native_runtime, "selected_device_id", None)
                     if isinstance(previous_members, Sequence) and not isinstance(
@@ -4371,17 +4787,25 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 or old_value * target_value < -0.5
                             ):
                                 increases.add(device_id)
-                            observed_direction, observed_w, _ = measured_flow(device_id)
+                            observed_direction, observed_w, observed_at = measured_flow(device_id)
                             target_direction = (
                                 "charge" if target_value > 0.5
                                 else "discharge" if target_value < -0.5
                                 else None
                             )
                             target_magnitude = abs(target_value)
+                            # A lagging same-direction measurement is not a
+                            # new handover: an increasing setpoint on this
+                            # device must not be interrupted by a zero command.
+                            # Genuine direction changes and actual target
+                            # reductions still require the existing barrier.
                             if observed_direction is not None and (
                                 observed_direction != target_direction
-                                or observed_w > target_magnitude
-                                + GROUP_HANDOVER_POWER_TOLERANCE_W
+                                or (
+                                    device_id not in increases
+                                    and observed_w > target_magnitude
+                                    + GROUP_HANDOVER_POWER_TOLERANCE_W
+                                )
                             ):
                                 reductions.add(device_id)
 
@@ -4436,7 +4860,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             result = CommandExecutionResult(
                                 status=failed_result.status,
                                 reason=(
-                                    f"group_handover_stop_failed:{failed_id}:"
+                                    f"group_handover_stop_failed:{_public_group_device_id(failed_id)}:"
                                     f"{failed_result.reason}"
                                 ),
                                 error=failed_result.error,
@@ -4515,7 +4939,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         result = CommandExecutionResult(
                             status=failed_result.status,
                             reason=(
-                                f"group_member_command_failed:{failed_id}:"
+                                f"group_member_command_failed:{_public_group_device_id(failed_id)}:"
                                 f"{failed_result.reason}"
                             ),
                             error=failed_result.error,
@@ -4523,10 +4947,36 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._persist["group_control_status"] = result.reason
                     else:
                         self._persist["group_control_members"] = list(target_commands)
+                        # Feed the actually accepted group total back to the
+                        # regulator; a profile/circuit cap or allocation may
+                        # have reduced the requested command.
+                        previous_targets = previous
+                        member_results = dict(results)
+                        accepted_at = dt_util.as_utc(self._clock.utc_now()).isoformat()
+                        if (
+                            set(previous_targets) != set(signed_targets)
+                            or any(
+                                not isinstance(previous_targets.get(device_id), Mapping)
+                                or previous_targets[device_id].get("power_w") != value
+                                for device_id, value in signed_targets.items()
+                            )
+                        ):
+                            self._persist["group_control_target_changed_at"] = accepted_at
                         self._persist["group_control_last_targets"] = {
                             device_id: {
-                                "direction": direction,
+                                "direction": (
+                                    "charge" if signed_targets[device_id] > 0
+                                    else "discharge" if signed_targets[device_id] < 0
+                                    else "idle"
+                                ),
                                 "power_w": signed_targets[device_id],
+                                "accepted_at": (
+                                    accepted_at
+                                    if member_results[device_id].status is CommandExecutionStatus.APPLIED
+                                    or not isinstance(previous_targets.get(device_id), Mapping)
+                                    or previous_targets[device_id].get("power_w") != signed_targets[device_id]
+                                    else previous_targets[device_id].get("accepted_at") or accepted_at
+                                ),
                             }
                             for device_id in target_commands
                         }
@@ -4555,9 +5005,24 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             ),
                         )
                         self._persist["group_control_status"] = status
-                self._persist.update(
-                    confirmed_command_state_updates(command, result)
-                )
+                        # All member commands were applied or confirmed
+                        # unchanged. Use the allocated total, even when no
+                        # new transport write was needed this cycle.
+                        total_input = int(round(sum(max(0.0, value) for value in signed_targets.values())))
+                        total_output = int(round(sum(max(0.0, -value) for value in signed_targets.values())))
+                        self._persist.update({
+                            "last_set_mode": "input" if direction == "charge" else "output" if direction == "discharge" else command.ac_mode,
+                            "last_set_input_w": total_input,
+                            "last_set_output_w": total_output,
+                        })
+                        if result.input_written:
+                            self._persist["input_write_last_success_w"] = total_input
+                        if result.output_written:
+                            self._persist["output_write_last_success_w"] = total_output
+                if group_plan is None:
+                    self._persist.update(
+                        confirmed_command_state_updates(command, result)
+                    )
             else:
                 # V6 commands may only use the native per-system adapter. A
                 # disabled/unavailable native path or an unconverted V5 entry
@@ -7515,6 +7980,20 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 )
 
+            group_max_output_w = self._native_group_power_limit_w(
+                native_runtime,
+                setting=SETTING_MAX_DISCHARGE,
+                selected_hardware_limit_w=profile_max_out,
+                reserve_soc_pct=float(soc_min),
+                maximum_soc_pct=float(soc_max),
+            )
+            _, group_selected_max_input_w, _ = resolve_charge_limits(
+                profile,
+                configured_charge_w=profile_max_in,
+                battery_packs=configured_packs,
+                native_pv_w=native_pv_w,
+                native_pv_valid=bool(native_pv_configured and native_pv_sensor_valid),
+            )
             ctx = RuntimeSnapshot(
                 now=now,
                 soc=soc,
@@ -7523,7 +8002,10 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 emergency_soc=float(emergency_soc),
                 emergency_charge_w=float(emergency_w),
                 max_charge_w=float(max_charge),
-                max_discharge_w=float(max_discharge),
+                max_discharge_w=(
+                    group_max_output_w if group_max_output_w is not None
+                    else float(max_discharge)
+                ),
                 grid_import_w=float(grid_import),
                 grid_export_w=float(grid_export),
                 pv_w=float(pv_w),
@@ -7646,6 +8128,47 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 soc_limits_valid=bool(soc_limits_valid),
                 power_limits_valid=bool(power_limits_valid),
             )
+
+            group_charge_members = enabled_group_members(
+                self.entry.options.get(CONF_BATTERY_GROUPS),
+                getattr(native_runtime, "selected_device_id", None),
+                objective=GROUP_OBJECTIVE_NEAR_ZERO,
+            )
+            grid_charge_policy = (
+                member_grid_charge_policy(self.entry.options, group_charge_members, ctx.profit_margin_pct)
+                if ai_mode == AI_MODE_AUTOMATIC and len(group_charge_members) > 1
+                and getattr(native_runtime, "control_enabled", False) else {}
+            )
+            eligible_grid_members = ()
+            if grid_charge_policy:
+                eligible_grid_members = eligible_grid_charge_members(
+                    grid_charge_policy, price_now, [p.price for p in price_points if p.start > now],
+                    winter=ctx.season == "winter",
+                )
+                ctx.member_grid_charge_blocked = not eligible_grid_members
+                ctx.member_grid_charge_spread_pct = min(
+                    (grid_charge_policy[key][0] for key in eligible_grid_members), default=None,
+                )
+
+            economic_plan, ctx.economic_power_w = await self._economic_group_plan(
+                ctx, native_runtime,
+                current_ac_input_w=group_selected_max_input_w,
+                load_model=learned_slot_model,
+                learned_ready=learned_planning_enabled and learned_readiness.status == "ready",
+                forecast_base_load_w=forecast_base_load_w,
+                selected_capacity_kwh=battery_capacity_kwh,
+                current_net_load_w=house_load - pv_w,
+                grid_charge_policy=grid_charge_policy,
+            )
+            planned_member_limits = economic_plan.pop("_member_limits_w", None) if economic_plan else None
+            if planned_member_limits and ctx.economic_power_w > 0:
+                # The split scheduler already checked every purchase against
+                # future local demand, including the price floor per battery.
+                ctx.member_grid_charge_blocked = False
+            if ctx.economic_power_w is not None and self._persist.get("charge_commit_active"):
+                self._clear_charge_commit("economic_schedule")
+            elif ctx.member_grid_charge_blocked and self._charge_pricing_reason("charge_commit_active") in CHARGE_COMMIT_SOURCE_REASONS:
+                self._clear_charge_commit("member_grid_charge_spread_not_met")
 
             base_required_kwh = (
                 battery_capacity_kwh
@@ -7980,7 +8503,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 float(self._persist.get("last_set_output_w", 0.0) or 0.0),
             )
 
-            automatic_economic_hold_active = maintain_active_economic_discharge(
+            automatic_economic_hold_active = ctx.economic_power_w is None and maintain_active_economic_discharge(
                 automatic_mode_active=(ai_mode == AI_MODE_AUTOMATIC),
                 strategy_active=bool(automatic_strategy_context.active),
                 strategy_allows_discharge=bool(
@@ -8280,7 +8803,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 
             # The strategic AC charge binding runs before power tracking and
             # StrategyIntent creation so the unified regulation sees it.
-            if not maintenance_application.applied:
+            if not maintenance_application.applied and ctx.economic_power_w is None:
                 decision = self._apply_charge_commit(
                     now=now,
                     decision=decision,
@@ -8809,6 +9332,17 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pv_handover_policy=pv_handover_policy,
                 load_coverage_priority=load_coverage_priority,
             )
+            charge_reason = self._charge_pricing_reason(decision.reason)
+            if planned_member_limits is not None and decision.reason in {
+                "economic_planning_charge", "economic_price_discharge",
+            }:
+                strategy_intent.metadata["group_economic_direction"] = decision.ac_mode
+                strategy_intent.metadata["group_economic_member_limits_w"] = planned_member_limits
+            elif grid_charge_policy and charge_reason in CHARGE_COMMIT_SOURCE_REASONS:
+                strategy_intent.metadata["group_economic_direction"] = "input"
+                strategy_intent.metadata["group_economic_member_limits_w"] = {
+                    key: None for key in eligible_grid_members
+                }
 
             # Smooth Autarky output within the configured band above the actual
             # SoC minimum. Keep this taper separate from the resume hysteresis:
@@ -8852,8 +9386,11 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 float(max_discharge)
                 * soc_min_discharge_taper_fraction
             )
+            group_selected_max_output_w = profile_max_out * soc_min_discharge_taper_fraction
             strategy_intent.metadata.update(
                 {
+                    "group_selected_max_input_w": group_selected_max_input_w,
+                    "group_selected_max_output_w": group_selected_max_output_w,
                     "soc_min_discharge_taper_active": (
                         soc_min_discharge_taper_active
                     ),
@@ -8869,12 +9406,20 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
-            group_max_input_w = self._native_group_max_input_w(
+            group_max_input_w = self._native_group_power_limit_w(
                 native_runtime,
-                selected_max_input_w=float(max_ac_input),
+                setting=SETTING_MAX_CHARGE,
+                selected_hardware_limit_w=group_selected_max_input_w,
                 reserve_soc_pct=float(soc_min),
                 maximum_soc_pct=float(soc_max),
             )
+            if (
+                group_max_input_w is not None
+                and decision.reason in {
+                    "economic_planning_charge", "economic_price_discharge", "economic_schedule_hold",
+                }
+            ):
+                group_max_input_w = min(group_max_input_w, float(decision.charge_w or 0.0))
             regulation_max_input_w = (
                 group_max_input_w
                 if group_max_input_w is not None
@@ -8886,6 +9431,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if (
                 group_max_input_w is not None
+                and ctx.economic_power_w is None
                 and group_max_input_w > float(max_ac_input) + 0.5
                 and str(strategy_intent.requested_mode).lower() == "input"
                 and requested_charge_w is not None
@@ -8912,16 +9458,24 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if native_pv_passthrough_selected
                 else soc_min_discharge_taper_max_output_w
             )
-            group_max_output_w = (
-                None
-                if native_pv_passthrough_selected
-                else self._native_group_max_output_w(
+            if native_pv_passthrough_selected:
+                group_max_output_w = None
+            elif soc_min_discharge_taper_active:
+                group_max_output_w = self._native_group_power_limit_w(
                     native_runtime,
-                    selected_max_output_w=selected_output_limit_w,
+                    setting=SETTING_MAX_DISCHARGE,
+                    selected_hardware_limit_w=group_selected_max_output_w,
                     reserve_soc_pct=float(soc_min),
                     maximum_soc_pct=float(soc_max),
                 )
-            )
+            if (
+                group_max_output_w is not None
+                and ctx.economic_power_w is not None
+                and not pv_houseload_passthrough_selected
+            ):
+                group_max_output_w = min(
+                    group_max_output_w, float(decision.discharge_w or 0.0)
+                )
             regulation_max_output_w = (
                 group_max_output_w
                 if group_max_output_w is not None
@@ -9296,6 +9850,18 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 offgrid_source_active=bool(offgrid_source_active),
             )
             
+            # Grid age must also be checked when performance timing is off.
+            feedback_grid_age = (
+                (dt_util.as_utc(now) - dt_util.as_utc(self._shelly_last_read_at)).total_seconds()
+                if self.entities.grid_mode in GRID_MODE_DIRECT_SHELLY and self._shelly_last_read_at is not None
+                else self._get_grid_state_age_seconds(now)
+            )
+            group_feedback = self._group_feedback_sample(
+                native_runtime, now=now, grid_age_s=feedback_grid_age,
+                grid_valid=grid_sensor_valid,
+            )
+            if group_feedback is None:
+                self._group_feedback_last_mono = None
             regulation_power_result = self._regulation_power_controller.calculate(
                 intent=strategy_intent,
                 arbiter=mode_arbiter_result,
@@ -9314,6 +9880,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if group_max_output_w is not None
                     else None
                 ),
+                group_feedback=group_feedback,
             )
 
             native_power_observed_at = None
@@ -11128,6 +11695,22 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             details["shadow_allocation_status"] = details[
                 "shadow_allocation"
             ]["status"]
+            quality = getattr(self, "_group_regulation_quality", None)
+            if quality is None:
+                quality = self._group_regulation_quality = RegulationQuality()
+            metadata = regulation_power_result.metadata
+            group_active = self._persist.get("group_control_status") == "group_control_active"
+            details["shadow_allocation"]["regulation_quality"] = quality.update(
+                self._clock.monotonic(),
+                float(grid_history_state.grid_now_w) - float(metadata.get("target_import_w", 0.0))
+                if grid_sensor_valid and group_active and details["shadow_allocation"].get("objective") == "near_zero"
+                else None,
+                deadband_w=float(metadata.get("effective_deadband_w", 30.0)),
+                limited=regulation_power_result.profile_limited,
+            )
+            details["shadow_allocation"]["feedback_active"] = bool(metadata.get("group_feedback_active"))
+            details["shadow_allocation"]["feedback_sample_available"] = group_feedback is not None
+            details["shadow_allocation"]["feedback_measured_ac_w"] = metadata.get("measured_ac_w")
 
             if timing_enabled and cycle_started_monotonic is not None:
                 details.update(
@@ -11174,6 +11757,63 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if self._persist.get("power_state") == "passthrough"
                 else "none"
             )
+            season_mode = details["season_mode"]
+            charge_plan = {"status": "no_charge_window"}
+            charge_start = learned_charge_plan.optimal_charge_start
+            charge_end = learned_charge_plan.optimal_charge_end
+            if (
+                learned_planning_enabled
+                and season_mode != "manual"
+                and learned_charge_plan.mode in {"wait", "charge"}
+                and charge_start is not None
+                and charge_end is not None
+                and charge_end > now
+            ):
+                charge_plan = {
+                    "status": "charge_window",
+                    "start": charge_start.isoformat(),
+                    "end": charge_end.isoformat(),
+                    "energy_kwh": learned_charge_plan.required_charge_energy_kwh,
+                }
+            elif learned_planning_enabled and season_mode != "manual" and learned_charge_plan.mode == "classic_fallback":
+                charge_plan = {"status": "charge_planner_not_ready"}
+            discharge_plan = (
+                _discharge_price_plan(
+                    price_points, now, effective_discharge_threshold, very_expensive
+                )
+                if season_mode == "winter"
+                else {"status": "no_fixed_discharge_time"}
+            )
+            price_preview = import_price_preview(now, import_market_price)
+            price_preview["discharge_windows"] = discharge_plan.pop("windows", ())
+            economic_plan_active = bool(economic_plan and economic_plan["status"] in {"active", "active_partial_forecast"})
+            if ai_mode == AI_MODE_AUTOMATIC and not economic_plan_active and charge_plan["status"] != "charge_window":
+                price_preview["charge_opportunities"] = _charge_price_opportunities(
+                    price_points, now, very_cheap_price, current_valley_threshold,
+                )
+            details["operation_plan"] = {
+                "charge": charge_plan,
+                "discharge": discharge_plan,
+                "economics": economic_plan,
+                "price_forecast": price_preview,
+            }
+            if group_active and getattr(native_runtime, "control_enabled", False) and not is_passthrough:
+                targets = self._persist.get("group_control_last_targets", {})
+                member_states = native_runtime.fresh_device_state_map()
+                for direction in ("charge", "discharge"):
+                    details["operation_plan"].update(_group_power_display(
+                        now, targets, member_states, group_feedback, direction=direction,
+                    ))
+            if economic_plan_active:
+                for direction, field in (
+                    ("charge", "grid_charge_kwh"), ("discharge", "discharge_kwh"),
+                ):
+                    window = economic_plan.get(field)
+                    price_preview[f"{direction}_windows"] = window.pop("windows", ()) if window else ()
+                    details["operation_plan"][direction] = (
+                        {**window, "status": "economic_window"}
+                        if window else {"status": "economic_no_window"}
+                    )
 
             await self._capture_regulation_training_sample(
                 now=now,

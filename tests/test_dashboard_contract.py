@@ -80,12 +80,23 @@ class DashboardContractTests(unittest.TestCase):
 
         self.assertIn("import hashlib", dashboard)
         self.assertIn("panel_module_version = hashlib.sha256(", dashboard)
-        self.assertIn('(frontend_dir / "hems-dashboard.js").read_bytes()', dashboard)
+        self.assertIn("panel_module = await hass.async_add_executor_job(", dashboard)
+        self.assertIn('(frontend_dir / "hems-dashboard.js").read_bytes', dashboard)
+        self.assertIn("hashlib.sha256(panel_module)", dashboard)
         self.assertIn(
             'module_url=f"{_PANEL_URL}?v={panel_module_version}"',
             dashboard,
         )
         self.assertNotIn('module_url=f"{_PANEL_URL}?v=52"', dashboard)
+
+    def test_dashboard_versions_use_distinct_element_names(self) -> None:
+        dashboard = (COMPONENT / "dashboard.py").read_text(encoding="utf-8")
+        frontend = (COMPONENT / "frontend" / "hems-dashboard.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('webcomponent_name=f"{_PANEL_NAME}-{panel_module_version}"', dashboard)
+        self.assertIn('new URL(import.meta.url).searchParams.get("v")', frontend)
+        self.assertIn('battery-smartflow-ai-hems-dashboard-${panelVersion}', frontend)
 
     def test_forecast_sensors_are_resolved_by_registered_unique_ids(self) -> None:
         dashboard = (COMPONENT / "dashboard.py").read_text(encoding="utf-8")

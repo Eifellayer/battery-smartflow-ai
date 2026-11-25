@@ -279,14 +279,20 @@ class NativeSourceFusion:
         }
         direct_hems = selected_values["hems_active"]
         activity = self._hems_activity[system_id].measurement(now=current)
-        # Infer inactivity only if no status was reported. A recent activity
-        # message still blocks writes when the reported status is inactive.
+        # A stale inactive report can be renewed by an uninterrupted quiet
+        # monitoring window. A previously active or malformed report still
+        # needs affirmative evidence before control can resume.
         if trace["hems_active"].status is not ReadSourceStatus.CONFLICT and (
             direct_hems.validity in {ValueValidity.NEVER_RECEIVED, ValueValidity.MISSING}
             or (
-                activity.valid and activity.value
-                and direct_hems.valid and not direct_hems.value
+                direct_hems.validity is ValueValidity.STALE
+                and direct_hems.value is False
+                and activity.valid
+                and direct_hems.observed_at is not None
+                and activity.observed_at is not None
+                and activity.observed_at > direct_hems.observed_at
             )
+            or (activity.valid and activity.value and direct_hems.valid and not direct_hems.value)
         ):
             selected_values["hems_active"] = activity
             trace["hems_active"] = SelectedMeasurement(

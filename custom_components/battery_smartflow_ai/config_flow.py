@@ -16,6 +16,7 @@ from .battery_groups import (
     DEFAULT_UPS_CHARGE_TARGET_SOC_PCT,
     DEFAULT_UPS_RESERVE_SOC_PCT,
     GROUP_OBJECTIVES,
+    GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE,
     migrate_single_device_group,
     remove_group,
     save_group,
@@ -148,6 +149,7 @@ from .native_config_ui import (
 )
 from .native_device_setup import (
     SETUP_COMPLETE,
+    native_device_profile_key,
     reconcile_device_setups,
     save_device_setup,
     setup_is_complete,
@@ -610,6 +612,9 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._native_options[
                             CONF_NATIVE_ZENDURE_SELECTED_DEVICE
                         ] = active_device_id
+                    active_profile_key = native_device_profile_key(
+                        self._native_setup_map, active_device_id
+                    )
                     # This is an integration-wide permission, so a value
                     # submitted while configuring any device must be retained.
                     self._native_options[
@@ -681,9 +686,9 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         ] = self._native_setup_map
                         entry = self._migration_entry
                         self._user_input["connection_type"] = "native"
-                        self._user_input.setdefault(
-                            CONF_DEVICE_PROFILE, profile.profile_key
-                        )
+                        if active_profile_key is not None:
+                            self._user_input[CONF_DEVICE_PROFILE] = active_profile_key
+                            self._native_options.pop(CONF_DEVICE_PROFILE, None)
                         return self.async_update_and_abort(
                             entry,
                             data=self._user_input,
@@ -714,8 +719,9 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             else {}
                         )
                         self._user_input["connection_type"] = "native"
-                        self._user_input[CONF_DEVICE_PROFILE] = profile.profile_key
-                        return await self.async_step_native_external()
+                        if active_profile_key is not None:
+                            self._user_input[CONF_DEVICE_PROFILE] = active_profile_key
+                        return await self.async_step_native_controller()
                     next_id = next(
                         item.candidate.candidate_id for item in devices
                         if item.candidate.supported
@@ -760,6 +766,41 @@ class ZendureSmartFlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ZendureSmartFlowOptionsFlow._native_device_summary(devices)
                 ),
             },
+        )
+
+    async def async_step_native_controller(self, user_input=None):
+        """Choose the controller after configuring the individual devices."""
+
+        setup = self._native_setup_map
+        choices = {
+            item.candidate.candidate_id: item
+            for item in self._native_bootstrap.devices
+            if native_device_profile_key(setup, item.candidate.candidate_id) is not None
+        }
+        if len(choices) < 2:
+            return await self.async_step_native_external()
+
+        errors = {}
+        if user_input is not None:
+            selected_id = user_input.get(CONF_NATIVE_ZENDURE_ACTIVE_DEVICE)
+            if selected_id in choices:
+                self._native_options[CONF_NATIVE_ZENDURE_SELECTED_DEVICE] = selected_id
+                self._native_options[CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT] = (
+                    setup["devices"][selected_id]["transport"]
+                )
+                self._user_input[CONF_DEVICE_PROFILE] = native_device_profile_key(
+                    setup, selected_id
+                )
+                return await self.async_step_native_external()
+            errors["base"] = "controller_device_not_configured"
+
+        default = self._native_options.get(CONF_NATIVE_ZENDURE_SELECTED_DEVICE)
+        return self.async_show_form(
+            step_id="native_controller",
+            data_schema=ZendureSmartFlowOptionsFlow._native_controller_schema(
+                choices, default if default in choices else next(iter(choices)), None
+            ),
+            errors=errors,
         )
 
     async def async_step_native_external(self, user_input=None):
@@ -1508,16 +1549,26 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
 
         return merged_options
 
+
+    async def _forecast_options(self) -> list[dict[str, str]]:
+        """List the same solar-forecast providers exposed to HA Energy."""
+
+        try:
+            return await async_energy_forecast_sources(self.hass)
+        except Exception:
+            return []
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         self._working_options = {}
         return self.async_show_menu(
             step_id="init",
             menu_options=[
+                "native_zendure",
+                "systems_groups",
                 "general",
                 "expert",
-                "dashboard",
                 "smart_mode",
-                "native_zendure",
+                "dashboard",
                 "training",
                 "debug",
             ],
@@ -1829,7 +1880,14 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             menu.extend(("topology_circuit_edit_select", "topology_circuit_remove"))
         if getattr(self, "_group_wizard_draft", None) is not None:
             menu.append("group_wizard_back_strategy")
-        menu.append("topology_continue_domains")
+        draft = getattr(self, "_group_wizard_draft", None)
+        if draft is not None and draft.get("objective") != GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+            if config["circuits"]:
+                menu.append("topology_continue_connections")
+            else:
+                menu.append("topology_skip_to_sensors")
+        else:
+            menu.append("topology_continue_domains")
         return self.async_show_menu(step_id="topology_circuits", menu_options=menu)
 
     async def async_step_topology_domains(self, user_input=None):
@@ -1847,20 +1905,47 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             menu.append("topology_connection_add")
         if config["connections"]:
             menu.extend(("topology_connection_edit_select", "topology_connection_remove"))
-        menu.extend(("topology_back_domains", "topology_continue_review"))
+        draft = getattr(self, "_group_wizard_draft", None)
+        if draft is not None and draft.get("objective") != GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+            menu.append("topology_back_circuits")
+        else:
+            menu.append("topology_back_domains")
+        menu.append("topology_continue_review")
         return self.async_show_menu(step_id="topology_connections", menu_options=menu)
 
     async def async_step_topology_review(self, user_input=None):
+        config = self._electrical_topology_config()
+        draft = getattr(self, "_group_wizard_draft", None)
+        missing = self._missing_group_outputs(config)
         preview = json.dumps(self._topology_preview_payload(), ensure_ascii=False)
+        menu = ["topology_back_connections", "topology_back_circuits"]
+        if draft is None or draft.get("objective") == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+            menu.append("topology_back_domains")
+        if not missing:
+            menu.insert(0, "topology_save")
         return self.async_show_menu(
             step_id="topology_review",
-            menu_options=[
-                "topology_back_circuits",
-                "topology_back_domains",
-                "topology_back_connections",
-                "topology_save",
-            ],
-            description_placeholders={"topology_preview": preview},
+            menu_options=menu,
+            description_placeholders={
+                "topology_preview": preview,
+                "missing_outputs": str(len(missing)),
+            },
+        )
+
+    def _missing_group_outputs(self, topology):
+        draft = getattr(self, "_group_wizard_draft", None)
+        if not draft or not draft.get("control_enabled"):
+            return ()
+        members = set(draft.get("members", ()))
+        required_kinds = {"grid"}
+        if draft.get("objective") == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+            required_kinds.add("off_grid")
+        assigned = {
+            (item["device_id"], item["kind"]) for item in topology["connections"]
+        }
+        return sorted(
+            (member, kind) for member in members for kind in required_kinds
+            if (member, kind) not in assigned
         )
 
     def _topology_preview_payload(self):
@@ -1895,6 +1980,19 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         ]
         return {"circuits": circuits, "load_domains": domains, "connections": connections}
 
+    async def async_step_topology_skip_to_sensors(self, user_input=None):
+        """Configure measurements before circuits; runtime topology gates stay in force."""
+        config = self._electrical_topology_config()
+        draft = getattr(self, "_group_wizard_draft", None)
+        if (
+            draft is None
+            or draft.get("objective") == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE
+            or config["circuits"]
+        ):
+            return await self.async_step_topology_circuits()
+        self._group_wizard_topology = save_electrical_topology(config)
+        return await self.async_step_group_wizard_sensors()
+
     async def async_step_topology_continue_domains(self, user_input=None):
         return await self.async_step_topology_domains()
 
@@ -1919,40 +2017,67 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             save_electrical_topology(config)
         except (TypeError, ValueError):
             return await self.async_step_topology_review()
-        if getattr(self, "_group_wizard_draft", None) is not None:
-            self._group_wizard_topology = save_electrical_topology(config)
+        draft = getattr(self, "_group_wizard_draft", None)
+        if draft is not None:
+            if self._missing_group_outputs(config):
+                return await self.async_step_topology_review()
+            self._group_wizard_topology = config
             return await self.async_step_group_wizard_sensors()
         return self._save_electrical_topology(config)
 
     async def async_step_group_wizard_sensors(self, user_input=None):
         """Collect the group's measurement context before the one final save."""
-        existing_scopes = self._energy_scope_config()["scopes"]
-        existing = next(
-            (item for item in existing_scopes.items() if self._group_wizard_id in item[1].get("group_ids", [])),
-            None,
-        )
-        self._group_wizard_scope_id = existing[0] if existing else uuid4().hex
-        current_scope = existing[1] if existing else {}
+        current_scope = getattr(self, "_group_wizard_scope_draft", None)
+        if current_scope is None:
+            scopes = self._energy_scope_config()["scopes"]
+            existing = next(
+                ((key, value) for key, value in scopes.items()
+                 if self._group_wizard_id in value["group_ids"]),
+                None,
+            )
+            self._group_wizard_scope_id = existing[0] if existing else uuid4().hex
+            current_scope = existing[1] if existing else {}
+        errors = {}
         if user_input is not None:
-            self._group_wizard_scope_draft = {
+            mode = user_input["grid_mode"]
+            scope = {
                 "name": user_input["scope_name"],
-                "group_ids": list(dict.fromkeys([
-                    *current_scope.get("group_ids", []),
-                    self._group_wizard_id,
-                ])),
-                "grid_mode": user_input["grid_mode"],
-                "grid_power_entities": user_input.get("grid_power_entities", []),
-                "grid_phase_power_entities": user_input.get("grid_phase_power_entities", []),
-                "grid_import_entities": user_input.get("grid_import_entities", []),
-                "grid_export_entities": user_input.get("grid_export_entities", []),
+                "group_ids": [*dict.fromkeys([
+                    *current_scope.get("group_ids", []), self._group_wizard_id
+                ])],
+                "grid_mode": mode,
+                "grid_power_entities": (
+                    user_input.get("grid_power_entities", []) if mode == ENERGY_GRID_MODE_SIGNED else []
+                ),
+                "grid_phase_power_entities": (
+                    user_input.get("grid_phase_power_entities", []) if mode == ENERGY_GRID_MODE_SIGNED else []
+                ),
+                "grid_import_entities": (
+                    user_input.get("grid_import_entities", []) if mode == ENERGY_GRID_MODE_SPLIT else []
+                ),
+                "grid_export_entities": (
+                    user_input.get("grid_export_entities", []) if mode == ENERGY_GRID_MODE_SPLIT else []
+                ),
                 "price_entity": user_input.get("price_entity") or "",
                 "export_price_entity": user_input.get("export_price_entity") or "",
-                "pv_sources": current_scope.get("pv_sources", []),
+                "pv_sources": list(current_scope.get("pv_sources", [])),
             }
-            return await self.async_step_group_wizard_pv_sources()
+            try:
+                if self._group_wizard_draft.get("control_enabled") and mode == ENERGY_GRID_MODE_NONE:
+                    raise ValueError("Group control requires grid measurements")
+                save_energy_scope(
+                    self._energy_scope_config(), scope_id=self._group_wizard_scope_id, scope=scope
+                )
+            except (TypeError, ValueError):
+                errors["base"] = "invalid_energy_scope"
+                current_scope = scope
+            else:
+                self._group_wizard_scope_draft = scope
+                return await self.async_step_group_wizard_pv_sources()
         return self.async_show_form(
             step_id="group_wizard_sensors",
             data_schema=self._group_wizard_sensor_schema(current_scope),
+            errors=errors,
         )
 
     def _group_wizard_sensor_schema(self, current=None):
@@ -1981,7 +2106,11 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         }
         return self.async_show_menu(
             step_id="group_wizard_review",
-            menu_options=["group_wizard_back_sensors", "group_wizard_save"],
+            menu_options=[
+                "group_wizard_save",
+                "group_wizard_back_sensors",
+                "topology_back_connections",
+            ],
             description_placeholders={
                 "group_name": self._group_wizard_draft["name"],
                 "member_count": str(len(self._group_wizard_draft.get("members", []))),
@@ -2022,32 +2151,74 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         menu_options = ["group_wizard_continue_review", "group_wizard_pv_add"]
         if self._group_wizard_scope_draft.get("pv_sources"):
             menu_options.append("group_wizard_pv_remove_select")
+        menu_options.append("group_wizard_back_sensors")
         return self.async_show_menu(step_id="group_wizard_pv_sources", menu_options=menu_options)
 
     async def async_step_group_wizard_pv_add(self, user_input=None):
+        scope = self._group_wizard_scope_draft
+        errors = {}
+        placeholders = {}
+        submitted = user_input or {}
         if user_input is not None:
-            self._group_wizard_scope_draft.setdefault("pv_sources", []).append({
+            source = {
                 "id": uuid4().hex,
                 "name": user_input["source_name"],
                 "mode": user_input["source_mode"],
                 "power_entities": user_input.get("power_entities", []),
                 "forecast_entry_ids": user_input.get("forecast_entry_ids", []),
                 "installed_power_wp": user_input.get("installed_power_wp"),
-            })
-            return await self.async_step_group_wizard_pv_sources()
-        try:
-            forecast_options = await async_energy_forecast_sources(self.hass)
-        except Exception:
-            forecast_options = []
-        return self.async_show_form(step_id="group_wizard_pv_add", data_schema=vol.Schema({
-            vol.Required("source_name"): str,
-            vol.Required("source_mode", default=PV_SOURCE_AGGREGATE): selector.SelectSelector(
-                selector.SelectSelectorConfig(options=[PV_SOURCE_AGGREGATE, PV_SOURCE_COMPONENTS], translation_key="energy_scope_pv_mode", mode=selector.SelectSelectorMode.DROPDOWN)
-            ),
-            vol.Optional("power_entities", default=[]): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
-            vol.Optional("installed_power_wp"): selector.NumberSelector(selector.NumberSelectorConfig(min=0, max=100000, step=10, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="Wp")),
-            vol.Optional("forecast_entry_ids", default=[]): selector.SelectSelector(selector.SelectSelectorConfig(options=forecast_options, multiple=True, mode=selector.SelectSelectorMode.DROPDOWN)),
-        }))
+            }
+            if source["mode"] == PV_SOURCE_AGGREGATE and len(source["power_entities"]) > 1:
+                errors["power_entities"] = "group_pv_aggregate_one_sensor"
+            else:
+                previous = scope.get("pv_sources", [])
+                for item in previous:
+                    if (
+                        source["name"].strip().casefold() == item["name"].casefold()
+                        or set(source["power_entities"]).intersection(item["power_entities"])
+                        or set(source["forecast_entry_ids"]).intersection(item["forecast_entry_ids"])
+                    ):
+                        errors["base"] = "group_pv_source_conflict"
+                        placeholders["conflicting_source"] = item["name"]
+                        break
+                if not errors:
+                    updated = {**scope, "pv_sources": [*previous, source]}
+                    try:
+                        save_energy_scope(
+                            self._energy_scope_config(),
+                            scope_id=self._group_wizard_scope_id,
+                            scope=updated,
+                        )
+                    except (TypeError, ValueError):
+                        errors["base"] = "invalid_energy_scope"
+                    else:
+                        self._group_wizard_scope_draft = updated
+                        return await self.async_step_group_wizard_pv_sources()
+
+        forecast_options = await self._forecast_options()
+        return self.async_show_form(
+            step_id="group_wizard_pv_add",
+            data_schema=vol.Schema({
+                vol.Required("source_name", default=submitted.get("source_name", "")): str,
+                vol.Required("source_mode", default=submitted.get("source_mode", PV_SOURCE_AGGREGATE)):
+                    selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=[PV_SOURCE_AGGREGATE, PV_SOURCE_COMPONENTS],
+                        translation_key="energy_scope_pv_mode", mode=selector.SelectSelectorMode.DROPDOWN,
+                    )),
+                vol.Optional("power_entities", default=submitted.get("power_entities", [])):
+                    selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+                vol.Optional("installed_power_wp", description={"suggested_value": submitted.get("installed_power_wp")}):
+                    selector.NumberSelector(selector.NumberSelectorConfig(
+                        min=0, max=50000, step=10, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="Wp",
+                    )),
+                vol.Optional("forecast_entry_ids", default=submitted.get("forecast_entry_ids", [])):
+                    selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=forecast_options, multiple=True, mode=selector.SelectSelectorMode.DROPDOWN,
+                    )),
+            }),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
 
     async def async_step_group_wizard_pv_remove_select(self, user_input=None):
         sources = self._group_wizard_scope_draft.get("pv_sources", [])
@@ -2064,10 +2235,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_group_wizard_review()
 
     async def async_step_group_wizard_back_sensors(self, user_input=None):
-        return self.async_show_form(
-            step_id="group_wizard_sensors",
-            data_schema=self._group_wizard_sensor_schema(self._group_wizard_scope_draft),
-        )
+        return await self.async_step_group_wizard_sensors()
 
     async def async_step_group_wizard_back_strategy(self, user_input=None):
         return await self.async_step_group_wizard_strategy()
@@ -2394,9 +2562,11 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
     ):
         """Open the persistent device and battery-group editor."""
 
-        menu_options = ["group_create"]
-        if self._group_choices():
-            menu_options.extend(("group_edit_select", "group_remove"))
+        menu_options = (
+            ["group_edit_select", "group_create", "group_remove"]
+            if self._group_choices()
+            else ["group_create"]
+        )
         return self.async_show_menu(
             step_id="systems_groups", menu_options=menu_options
         )
@@ -2578,6 +2748,9 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             self._group_wizard_draft = {**current, **user_input}
             self._draft_electrical_topology = self._electrical_topology_config()
             return await self.async_step_group_wizard_strategy()
+        draft = getattr(self, "_group_wizard_draft", None)
+        if draft and getattr(self, "_group_wizard_id", None) == group_id:
+            current = draft
         schema = vol.Schema(
             {
                 vol.Required("name"): str,
@@ -3112,6 +3285,9 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 options[CONF_NATIVE_ZENDURE_APP_TOKEN] = self._native_token
                 options[CONF_NATIVE_ZENDURE_DEVICE_SETUPS] = setup_map
                 options[CONF_NATIVE_ZENDURE_SELECTED_DEVICE] = selected_id
+                profile_key = native_device_profile_key(setup_map, selected_id)
+                if profile_key is not None:
+                    options[CONF_DEVICE_PROFILE] = profile_key
                 options[CONF_NATIVE_ZENDURE_CONTROL_TRANSPORT] = transport.value
                 options[CONF_NATIVE_ZENDURE_CONTROL_ENABLED] = bool(
                     user_input.get(
@@ -3141,7 +3317,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
 
     @staticmethod
     def _native_controller_schema(
-        devices, selected_default: str, control_enabled: bool
+        devices, selected_default: str, control_enabled: bool | None
     ) -> vol.Schema:
         device_choices = [
             {
@@ -3154,23 +3330,22 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             }
             for device_id, item in devices.items()
         ]
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_NATIVE_ZENDURE_ACTIVE_DEVICE,
-                    default=selected_default,
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=device_choices,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Required(
-                    CONF_NATIVE_ZENDURE_CONTROL_ENABLED,
-                    default=control_enabled,
-                ): selector.BooleanSelector(),
-            }
-        )
+        schema = {
+            vol.Required(
+                CONF_NATIVE_ZENDURE_ACTIVE_DEVICE,
+                default=selected_default,
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=device_choices,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+        }
+        if control_enabled is not None:
+            schema[vol.Required(
+                CONF_NATIVE_ZENDURE_CONTROL_ENABLED, default=control_enabled
+            )] = selector.BooleanSelector()
+        return vol.Schema(schema)
 
     @staticmethod
     def _native_device_schema(
@@ -3238,6 +3413,8 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 value,
             ),
         )
+        if available_transports and stored_transport not in available_transports:
+            stored_transport = available_transports[0]
         zensdk_devices = [
             item
             for item in transport_devices
@@ -3323,7 +3500,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
         if any(
             preferred_local_transport(item.candidate.identity)
             is ZendureTransport.LOCAL_MQTT
-            for item in devices
+            for item in transport_devices
         ):
             schema.update({
                 vol.Optional(

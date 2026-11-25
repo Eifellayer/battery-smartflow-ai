@@ -128,21 +128,21 @@
         }
       },
       "user": {
-        "title": "Battery SmartFlow AI einrichten",
+        "title": "Netzmessung und Datenquellen auswählen",
         "menu_options": {
           "native_login": "Zendure direkt verbinden",
           "legacy": "Vorhandene HA-Entitäten verwenden"
         }
       },
       "native_login": {
-        "title": "Bei Zendure anmelden",
+        "title": "Zendure-Konto verbinden",
         "description": "Der App-Token wird geschützt gespeichert. Die lokale Verbindung wird automatisch anhand des Gerätemodells gewählt.",
         "data": {
           "native_zendure_app_token": "App Token"
         }
       },
       "native_device": {
-        "title": "Zendure-System auswählen",
+        "title": "Verbindung des Zendure-Systems einrichten",
         "description": "Zendure hat folgende Geräte gemeldet:\n\n{device_summary}\n\nWähle genau ein System. Battery SmartFlow AI verwendet automatisch den vom Modell unterstützten lokalen Transport. Die native Steuerung wird nur mit dem separaten Schalter darunter aktiviert. Ist sie aktiv, schreibt BSFAI nicht mehr über die konfigurierten Z-HA-Entitäten.",
         "data": {
           "native_zendure_selected_device": "Zendure-System",
@@ -163,6 +163,16 @@
           "native_zendure_local_mqtt_username": "Zugangsdaten des vorhandenen Brokers für BSFAI.",
           "native_zendure_local_mqtt_password": "Die Punktmaske unverändert lassen, um das gespeicherte private Passwort weiterzuverwenden.",
           "native_zendure_zensdk_ip": "Optionale private IPv4-Adresse für dieses Zendure-System. Im Router eine DHCP-Reservierung einrichten. Bei gesetzter Adresse verwenden ZenSDK-Anfragen nur diese Adresse und umgehen mDNS für dieses Gerät."
+        }
+      },
+      "native_controller": {
+        "title": "Aktives Zendure-Steuergerät auswählen",
+        "description": "Wähle das eingerichtete System, das BSFAI im Einzelgerätebetrieb steuern soll. Bei aktivierter Gruppenregelung können die eingerichteten Mitglieder der jeweiligen Gruppe gemeinsam gesteuert werden.",
+        "data": {
+          "native_zendure_active_device": "Aktives Steuergerät"
+        },
+        "data_description": {
+          "native_zendure_active_device": "Dieses System wird außerhalb der Gruppenregelung von BSFAI gesteuert. Im Gruppenbetrieb werden die eingerichteten Mitglieder der aktiven Gruppe gemeinsam geregelt. Der für dieses System gespeicherte Kommunikationsweg wird verwendet."
         }
       },
       "native_external": {
@@ -276,6 +286,8 @@
       "topology_record_missing": "Der ausgewählte Topologie-Eintrag ist nicht mehr vorhanden."
     },
     "error": {
+      "group_pv_aggregate_one_sensor": "Für einen Gesamtzähler wähle genau einen Leistungssensor. Für mehrere Sensoren wähle Einzelmessungen.",
+      "group_pv_source_conflict": "Name, Sensor oder Prognosequelle ist bereits der PV-Quelle „{conflicting_source}“ zugeordnet.",
       "invalid_zensdk_ip": "Gib eine private IPv4-Adresse des Zendure-Geräts ein.",
       "zensdk_ip_unsupported": "Dieses Zendure-Modell unterstützt keine direkten ZenSDK-Messwerte.",
       "zensdk_ip_clear_conflict": "Gib eine Adresse ein oder wähle automatische Erkennung, nicht beides.",
@@ -287,11 +299,12 @@
         "title": "Battery SmartFlow AI einstellen",
         "description": "Wähle den Einstellungsbereich aus. Gerätespezifische Regelwerte werden automatisch durch das ausgewählte Geräteprofil verwaltet.",
         "menu_options": {
-          "general": "Allgemein",
+          "systems_groups": "Systeme & Gruppen",
+          "general": "Anlage und Messwerte",
           "expert": "Expertenmodus",
           "dashboard": "HEMS-Dashboard",
           "smart_mode": "Zendure-SmartMode",
-          "native_zendure": "Natives Zendure",
+          "native_zendure": "Zendure-Geräte und Controller",
           "training": "Regelungstraining",
           "debug": "Debug-Modus"
         }
@@ -318,6 +331,158 @@
         },
         "data_description": {
           "installed_pv_wp": "Installierte theoretische PV-Modulleistung der Anlage in Wp. Dieser Wert wird für relative PV-Kontextschwellen und weitere PV-bezogene Logik verwendet."
+        }
+      },
+      "topology_circuits": {
+        "title": "Stromkreise festlegen",
+        "description": "Lege die Stromkreise an, an denen die Speicher angeschlossen sind. Trage nur bekannte Grenzen ein.",
+        "menu_options": {
+          "topology_circuit_add": "Stromkreis hinzufügen",
+          "topology_circuit_edit_select": "Stromkreis bearbeiten",
+          "topology_circuit_remove": "Stromkreis entfernen",
+          "group_wizard_back_strategy": "Zurück zum Gruppenziel",
+          "topology_continue_connections": "Weiter zu den Geräteausgängen",
+          "topology_skip_to_sensors": "Weiter ohne Stromkreise (Steuerung erst nach Zuordnung)",
+          "topology_continue_domains": "Weiter zu den Lastbereichen"
+        }
+      },
+      "topology_domains": {
+        "title": "Insel- und USV-Lastbereiche",
+        "menu_options": {
+          "topology_domain_add": "Lastbereich hinzufügen",
+          "topology_domain_edit_select": "Lastbereich bearbeiten",
+          "topology_domain_remove": "Lastbereich entfernen",
+          "topology_back_circuits": "Zurück zu den Stromkreisen",
+          "topology_continue_connections": "Weiter zu den Geräteausgängen"
+        }
+      },
+      "topology_connections": {
+        "title": "Geräteausgänge zuordnen",
+        "description": "Ordne jedem Gerät den Stromkreis seines Netzanschlusses zu.",
+        "menu_options": {
+          "topology_connection_add": "Geräteausgang zuordnen",
+          "topology_connection_edit_select": "Zuordnung bearbeiten",
+          "topology_connection_remove": "Zuordnung entfernen",
+          "topology_back_circuits": "Zurück zu den Stromkreisen",
+          "topology_back_domains": "Zurück zu den Lastbereichen",
+          "topology_continue_review": "Zuordnungen prüfen"
+        }
+      },
+      "topology_review": {
+        "title": "Stromkreise und Ausgänge prüfen",
+        "description": "Fehlende Geräteausgänge für die aktive Regelung: {missing_outputs}. Sind alle zugeordnet, kannst du fortfahren.",
+        "menu_options": {
+          "topology_save": "Zuordnungen übernehmen und fortfahren",
+          "topology_back_circuits": "Stromkreise bearbeiten",
+          "topology_back_domains": "Lastbereiche bearbeiten",
+          "topology_back_connections": "Geräteausgänge bearbeiten"
+        }
+      },
+      "topology_circuit_edit_select": {
+        "title": "Stromkreis auswählen",
+        "data": {
+          "record_id": "Stromkreis"
+        }
+      },
+      "topology_domain_edit_select": {
+        "title": "Lastbereich auswählen",
+        "data": {
+          "record_id": "Lastbereich"
+        }
+      },
+      "topology_connection_edit_select": {
+        "title": "Geräteausgang auswählen",
+        "data": {
+          "record_id": "Geräteausgang"
+        }
+      },
+      "group_wizard_strategy": {
+        "title": "Gruppenziel und Zusammenarbeit festlegen",
+        "data": {
+          "objective": "Gruppenziel",
+          "control_enabled": "Gestufte Gruppenregelung aktivieren",
+          "balancing_policy": "Verteilung der Leistung",
+          "soc_delta_pct": "SoC-Abstand zum Wechsel (%)",
+          "peak_import_limit_w": "Maximaler Netzbezug (W)",
+          "ups_charge_target_soc_pct": "USV-Ladeziel (%)",
+          "ups_reserve_soc_pct": "USV-Reserve (%)"
+        }
+      },
+      "group_wizard_sensors": {
+        "title": "Netzmessung zuordnen",
+        "description": "Wähle einen vorzeichenbehafteten Netzzähler oder getrennte Sensoren für Bezug und Einspeisung.",
+        "data": {
+          "scope_name": "Name der Sensorzuordnung",
+          "grid_mode": "Art der Netzmessung",
+          "grid_power_entities": "Vorzeichenbehaftete Netzleistung",
+          "grid_phase_power_entities": "Netzleistung je Phase",
+          "grid_import_entities": "Netzbezug",
+          "grid_export_entities": "Netzeinspeisung",
+          "price_entity": "Bezugspreis",
+          "export_price_entity": "Einspeisepreis"
+        }
+      },
+      "group_wizard_pv_sources": {
+        "title": "PV und Prognose zuordnen",
+        "description": "Ergänze die PV-Quellen dieser Gruppe oder gehe direkt zur Übersicht.",
+        "menu_options": {
+          "group_wizard_continue_review": "Gruppe prüfen",
+          "group_wizard_pv_add": "PV-Quelle hinzufügen",
+          "group_wizard_pv_remove_select": "PV-Quelle entfernen",
+          "group_wizard_back_sensors": "Netzmessung bearbeiten"
+        }
+      },
+      "group_wizard_pv_add": {
+        "title": "PV-Quelle hinzufügen",
+        "data": {
+          "source_name": "Name der PV-Quelle",
+          "source_mode": "Art der Leistungsmessung",
+          "power_entities": "PV-Leistungssensoren",
+          "installed_power_wp": "Installierte PV-Leistung (Wp)",
+          "forecast_entry_ids": "Prognosequellen"
+        }
+      },
+      "group_wizard_pv_remove_select": {
+        "title": "PV-Quelle entfernen",
+        "data": {
+          "source_id": "PV-Quelle"
+        }
+      },
+      "group_wizard_review": {
+        "title": "Batteriegruppe prüfen und speichern",
+        "description": "Gruppe: {group_name}. Systeme: {members}. Netzmessung: {grid_sensors}. PV-Quellen: {pv_sources}.",
+        "menu_options": {
+          "group_wizard_save": "Batteriegruppe speichern",
+          "group_wizard_back_sensors": "Netzmessung und PV bearbeiten",
+          "topology_back_connections": "Geräteausgänge bearbeiten"
+        }
+      },
+      "topology_circuit_edit": {
+        "title": "Stromkreis bearbeiten",
+        "description": "Es wird keine Strom- oder Leistungsgrenze vorausgesetzt. Trage nur tatsächlich geltende Grenzen ein.",
+        "data": {
+          "name": "Name",
+          "phase": "Phase",
+          "max_current_a": "Maximalstrom (A)",
+          "max_power_w": "Maximale Leistung (W)",
+          "parent_circuit_id": "Gemeinsame vorgeschaltete Sicherung"
+        }
+      },
+      "topology_domain_edit": {
+        "title": "Lastbereich bearbeiten",
+        "data": {
+          "name": "Name des Lastbereichs",
+          "kind": "Art des Lastbereichs"
+        }
+      },
+      "topology_connection_edit": {
+        "title": "Geräteausgang bearbeiten",
+        "data": {
+          "device_id": "Zendure-System",
+          "output_id": "Ausgangsbezeichnung",
+          "kind": "Ausgangsart",
+          "circuit_id": "Stromkreis",
+          "load_domain_id": "Lastbereich"
         }
       },
       "systems_groups": {"title": "Systeme & Gruppen", "description": "Lege dauerhafte Gruppen für eingerichtete Systeme an. Neu erkannte Geräte bleiben ungruppiert, bis du sie zuordnest. Eine Gruppenmitgliedschaft aktiviert keine gleichzeitige Leistungsregelung.", "menu_options": {"group_create": "Gruppe anlegen", "group_edit_select": "Gruppe bearbeiten oder Systeme verschieben", "group_remove": "Gruppe entfernen"}},
@@ -972,6 +1137,9 @@
       "decision_reason": {
         "name": "Entscheidungsgrund",
         "state": {
+          "economic_planning_charge": "Netzladung für späteren teuren Hausverbrauch",
+          "economic_price_discharge": "Akkustrom deckt den Hausverbrauch laut Kostenplan",
+          "economic_schedule_hold": "Der Kostenplan sieht gerade keine Lade- oder Entladeleistung vor",
           "standby": "Bereitschaft",
           "state_idle": "Kein Bedarf erkannt",
           "state_enter_discharge": "Entladen gestartet (Bedarf erkannt)",

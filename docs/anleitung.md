@@ -174,6 +174,12 @@ Das Gruppenziel bestimmt, wie viele Watt die Gruppe insgesamt laden oder entlade
 
 Die Verteilung erfolgt stufenweise. Angenommen, zwei Geräte dürfen jeweils 800 W entladen und der gemeinsame Stromkreis lässt die Gesamtleistung zu. Im ersten Durchgang nutzt die Gruppe je Gerät bis zu 75 % seines wirksamen Limits, hier also 600 W. Erst wenn dieser Bereich bei beiden ausgeschöpft ist, nutzt sie den Rest bis zum jeweiligen Maximum.
 
+Bei aktiver Gruppensteuerung begrenzen **Max. Entladeleistung** und **Max. AC-Ladeleistung** jeweils die Summe der Sollwerte. 700 W Entladeleistung gelten damit für die gesamte Gruppe. Jedes Gerät behält seine eigene Leistungsgrenze. Die Vorschau zeigt das Gruppenlimit und die verfügbaren Gerätegrenzen. Zuordnungen und Stromkreisgrenzen können die tatsächlich verteilbare Leistung weiter senken.
+
+Im Automatikmodus kann eine aktive Gruppe mit dem Ziel **Eigenverbrauch / nahe 0 W** ihren Speicher anhand der erwarteten Stromkosten einteilen. Die Planung vergleicht die erwartete Hauslast, den PV-Ertrag und die Strompreise für bis zu 24 Stunden. Sie hält Energie für teurere Stunden zurück, soweit der erwartete Bedarf sie rechtfertigt. Geplantes Netzladen deckt nur die voraussichtlich wirtschaftliche Fehlmenge. Die Rechnung setzt vorerst 81 Prozent Lade- und Entladewirkungsgrad zusammen an. Unter **Übersicht → Systemzustand** stehen die nächsten Zeitfenster, die reservierten Kilowattstunden, die für den aktuellen Zeitraum eingeplante Entladung und die geplante Netzladung. Wenn das Verbrauchsprofil oder die PV-Zeitreihe fehlt, zeigt das Portal den Grund und die Automatik verwendet ihre bisherige Strategie.
+
+Unter **Energie → Strompreisvorschau** zeigt das Portal die veröffentlichten Bezugspreise mit günstigstem und teuerstem Zeitraum. Die Tabelle markiert alle Zeiträume aus dem aktiven Lade- und Entladeplan. Wenn die bisherige Preisregelung aktiv ist, kennzeichnet das Portal geeignete Zeiträume als **Entladen möglich**. Ob das tatsächlich passiert, hängt von Hausverbrauch, Ladezustand und Schutzgrenzen ab. Eine laufende Entladung der Gruppe wird anhand der gemessenen Leistung angezeigt.
+
 | Entladeziel der Gruppe | Führendes Gerät | Zweites Gerät |
 | ---: | ---: | ---: |
 | 500 W | 500 W | 0 W |

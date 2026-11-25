@@ -30,6 +30,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
 
   set panel(panel) {
     this._panel = panel;
+    if (this._hass) this._loadPortalTranslations();
     this._scheduleRender();
   }
 
@@ -54,7 +55,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
     this._optionsOpeningStepId = null;
     this._pointerActive = false;
     this._renderDeferred = false;
-    this._portalTranslationLanguage = null;
+    this._portalTranslationUrl = null;
     this._portalTranslations = null;
     this.shadowRoot.addEventListener("pointerdown", () => {
       this._pointerActive = true;
@@ -101,8 +102,10 @@ class BatterySmartFlowDashboard extends HTMLElement {
       const viewButton = nodeFor("[data-view]");
       if (viewButton) {
         this._view = viewButton.dataset.view;
-        this.shadowRoot.querySelectorAll("[data-view]").forEach((tab) => {
-          tab.classList.toggle("active", tab.dataset.view === this._view);
+        this.shadowRoot.querySelectorAll(".portal-nav [data-view]").forEach((tab) => {
+          const selected = tab.dataset.view === this._view;
+          tab.classList.toggle("active", selected);
+          tab.setAttribute("aria-current", selected ? "page" : "false");
         });
         this._scheduleRender();
         return;
@@ -519,15 +522,16 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const language = String(this._hass?.locale?.language || "en")
       .toLowerCase()
       .split(/[-_]/)[0];
-    if (language === this._portalTranslationLanguage) return;
-    this._portalTranslationLanguage = language;
-    this._portalTranslations = null;
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = encodeURIComponent(this._panel?.config?.dashboard_version || "1.0.66");
-    fetch(`/battery_smartflow_ai/translations/${safeLanguage}.json?v=${version}`)
+    const version = this._panel?.config?.dashboard_version || "1.0.76";
+    const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
+    if (url === this._portalTranslationUrl) return;
+    this._portalTranslationUrl = url;
+    this._portalTranslations = null;
+    fetch(url)
       .then((response) => response.ok ? response.json() : {})
       .then((translations) => {
-        if (this._portalTranslationLanguage !== language) return;
+        if (this._portalTranslationUrl !== url) return;
         this._portalTranslations = translations;
         this._scheduleRender();
       })
@@ -590,7 +594,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       topology_circuit_add_help: { de: "Lege erst fest, über welchen Stromkreis ein System angeschlossen ist. Trage eine Phase und nur bekannte Grenzen ein. Eine gemeinsame vorgeschaltete Sicherung kannst du später als übergeordneten Stromkreis auswählen.", en: "First describe the circuit a system is connected to. Select its phase and enter only known limits. You can add a shared upstream circuit and link it afterward.", fr: "Décrivez d’abord le circuit auquel le système est raccordé. Choisissez sa phase et saisissez uniquement les limites connues.", nl: "Beschrijf eerst het circuit waarop het systeem is aangesloten. Kies de fase en vul alleen bekende limieten in." },
       topology_domain_add_help: { de: "Ein Lastbereich benennt, welche Verbraucher an einem Ausgang hängen. Für Off-Grid- und USV-Ausgänge ist ein Insel-Lastbereich erforderlich.", en: "A load domain names the loads served by an output. Off-grid and UPS outputs require an off-grid load domain.", fr: "Une zone de charge décrit les appareils alimentés par une sortie. Les sorties hors réseau/UPS nécessitent une zone dédiée.", nl: "Een lastgebied beschrijft welke verbruikers op een uitgang zijn aangesloten. Off-grid- en UPS-uitgangen vereisen een off-grid-lastgebied." },
       topology_connection_add_help: { de: "Ordne jedem eingerichteten Zendure-System den tatsächlichen Netzausgang oder Insel-Ausgang und seinen Stromkreis zu. Off-Grid-Ausgänge brauchen zusätzlich einen Insel-Lastbereich.", en: "Map each configured Zendure system's actual grid or off-grid output to its circuit. Off-grid outputs also need an off-grid load domain.", fr: "Associez la sortie réseau ou hors réseau réelle de chaque système Zendure configuré à son circuit. Les sorties hors réseau nécessitent aussi une zone dédiée.", nl: "Koppel de werkelijke net- of off-grid-uitgang van elk ingesteld Zendure-systeem aan het circuit. Off-grid-uitgangen hebben ook een off-grid-lastgebied nodig." },
-      topology_review_help: { de: "Prüfe die Skizze. Erst mit „Topologie speichern“ werden alle Änderungen gemeinsam übernommen. Die Angaben verändern die Regelung in dieser Version nicht.", en: "Review the diagram. Nothing is saved until you choose Save topology. These settings do not change regulation in this version.", fr: "Vérifiez le schéma. Les changements ne sont enregistrés qu’en choisissant Enregistrer. Ils ne modifient pas la régulation dans cette version.", nl: "Controleer het schema. Wijzigingen worden pas opgeslagen wanneer je Opslaan kiest. Deze instellingen veranderen de regeling in deze versie niet." },
+      topology_review_help: { de: "Prüfe, ob alle Geräteausgänge mit dem passenden Stromkreis verbunden sind. Die Gruppenregelung berücksichtigt diese Zuordnung und die eingetragenen Grenzen.", en: "Review the diagram. Nothing is saved until you choose Save topology. These settings do not change regulation in this version.", fr: "Vérifiez le schéma. Les changements ne sont enregistrés qu’en choisissant Enregistrer. Ils ne modifient pas la régulation dans cette version.", nl: "Controleer het schema. Wijzigingen worden pas opgeslagen wanneer je Opslaan kiest. Deze instellingen veranderen de regeling in deze versie niet." },
       topology_continue_domains: { de: "Weiter zu Lastbereichen", en: "Continue to load domains", fr: "Continuer vers les zones de charge", nl: "Verder naar lastgebieden" },
       topology_continue_connections: { de: "Weiter zu Geräteausgängen", en: "Continue to device outputs", fr: "Continuer vers les sorties", nl: "Verder naar apparaatuitgangen" },
       topology_continue_review: { de: "Zur Übersicht und Prüfung", en: "Review topology", fr: "Vérifier la topologie", nl: "Topologie controleren" },
@@ -601,6 +605,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       topology_add_to_draft: { de: "Zum Entwurf hinzufügen", en: "Add to draft", fr: "Ajouter au brouillon", nl: "Aan concept toevoegen" },
       topology_apply_draft: { de: "Änderung übernehmen", en: "Apply change", fr: "Appliquer la modification", nl: "Wijziging toepassen" },
       topology_remove_from_draft: { de: "Aus Entwurf entfernen", en: "Remove from draft", fr: "Supprimer du brouillon", nl: "Uit concept verwijderen" },
+      group_pv_aggregate_one_sensor: { de: "Für mehrere Leistungssensoren wähle Einzelmessungen.", en: "Use component measurements for multiple power sensors." },
+      group_pv_source_conflict: { de: "Name, Sensor oder Prognose ist bereits der PV-Quelle {source} zugeordnet.", en: "The name, sensor, or forecast is already assigned to PV source {source}." },
+      invalid_energy_scope: { de: "Prüfe die Netzmessart und die Sensorzuordnung. Aktive Gruppen brauchen eine gültige Netzmessung.", en: "Check the grid mode and sensor assignment. Active groups require valid grid measurements." },
       topology_no_outputs: { de: "Noch kein Geräteausgang zugeordnet", en: "No device output mapped yet", fr: "Aucune sortie associée", nl: "Nog geen apparaatuitgang gekoppeld" },
       topology_upstream: { de: "Gemeinsame vorgeschaltete Grenze", en: "Shared upstream limit", fr: "Limite amont partagée", nl: "Gedeelde bovenliggende limiet" },
       topology_step_of: { de: "Schritt", en: "Step", fr: "Étape", nl: "Stap" },
@@ -1035,6 +1042,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
     const showForecast = forecastSources.length > 0 || forecastStatus === "available";
     return `
       ${this._livePowerView(entities)}
+      ${this._pricePreview()}
       <section class="section"><div class="section-head"><h2>${this._escape(this._t("flows_today"))}</h2><small>${this._escape(this._t("daily_energy_note"))}</small></div>
         <small class="flow-scale">${this._escape(this._t("relative_flow_scale"))}</small><div class="flow-grid">
           ${flowRows}
@@ -1182,8 +1190,249 @@ class BatterySmartFlowDashboard extends HTMLElement {
     return `${Math.floor(age / 60)} ${this._t("minutes_ago")}`;
   }
 
+  _regulationMessages() {
+    const states = this._hass?.states || {};
+    const entries = this._panel?.config?.battery_groups || [];
+    return entries.flatMap((entry) => {
+      const state = (key) => states[entry.regulation_status_entities?.[key]];
+      const engine = state("engine_health");
+      const mode = state("ai_status");
+      const reason = state("decision_reason");
+      const allocation = states[entry.shadow_allocation_entity]?.attributes;
+      const nextAction = state("next_action_state");
+      if (!engine && !mode && !reason && !allocation) return [];
+      const dispatch = allocation?.dispatch_status;
+      const price = state("price_now");
+      const threshold = state("effective_discharge_threshold");
+      const lowPrice = reason?.state === "idle" && mode?.state === "standby" &&
+        state("season_mode")?.state === "winter" &&
+        price?.attributes?.unit_of_measurement &&
+        price.attributes.unit_of_measurement === threshold?.attributes?.unit_of_measurement &&
+        Number.isFinite(Number(price.state)) && Number.isFinite(Number(threshold.state)) &&
+        Number(price.state) < Number(threshold.state);
+      const blocked = Boolean((engine && engine.state !== "ok") ||
+        (dispatch && dispatch !== "group_control_active"));
+      let summary;
+      if (engine && engine.state !== "ok") {
+        summary = this._t(`health_engine_${engine.state}`);
+        if (summary === `health_engine_${engine.state}`) {
+          summary = `${this._t("health_engine_check")} (${engine.state})`;
+        }
+      } else if (blocked) {
+        const code = dispatch.split(":")[0];
+        summary = this._t(`health_dispatch_${code}`);
+        if (summary === `health_dispatch_${code}`) {
+          summary = `${this._t("health_dispatch_check")} (${code})`;
+        }
+      } else if (lowPrice) {
+        summary = this._t("health_price_below_threshold");
+      } else if (["economic_schedule_hold", "economic_planning_charge", "economic_price_discharge"].includes(reason?.state)) {
+        summary = this._t(`health_${reason.state}`);
+      } else if (mode?.state === "standby" && ["idle", "standby", "state_idle"].includes(reason?.state)) {
+        summary = this._t("health_standby");
+      } else {
+        const label = (entity) => entity && (this._hass.formatEntityState?.(entity) || entity.state);
+        summary = [label(mode), label(reason)].filter(Boolean).join(" · ") ||
+          this._t("health_waiting");
+      }
+      const values = [
+        [state("grid_power"), "health_grid_power"],
+        ...(lowPrice ? [[price, "health_import_price"], [threshold, "health_discharge_threshold"]] : []),
+      ].filter(([entity]) => entity && Number.isFinite(Number(entity.state)))
+        .map(([entity, key]) => `${this._t(key)}: ${this._value(entity)}`);
+      return [{
+        title: allocation?.group_name || entry.system,
+        summary, values, blocked, nextAction,
+        priceUnit: price?.attributes?.unit_of_measurement,
+      }];
+    });
+  }
+
+  _operationPlan(nextAction, priceUnit) {
+    const { charge, discharge } = nextAction?.attributes || {};
+    if (!charge || !discharge) return "";
+    const locale = this._hass?.locale?.language;
+    const format = new Intl.DateTimeFormat(locale, {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      timeZone: this._hass?.config?.time_zone || undefined,
+    });
+    const time = (iso) => iso && Number.isFinite(Date.parse(iso)) ? format.format(new Date(iso)) : "";
+    const row = (direction, plan) => {
+      const start = time(plan.start);
+      const end = time(plan.end);
+      const range = start && end ? `${start} – ${end}` : start;
+      const live = this._liveBatteryFlow(nextAction, direction);
+      const status = this._t(live?.label || `plan_${plan.status}`);
+      const details = [range];
+      if (live?.power != null) details.unshift(`${live.power.toLocaleString(locale)} W`);
+      if (direction === "charge" && Number.isFinite(plan.energy_kwh) && plan.energy_kwh > 0) {
+        details.push(`${plan.energy_kwh.toLocaleString(locale, { maximumFractionDigits: 2 })} kWh`);
+      }
+      if (Number.isFinite(plan.price) && priceUnit) {
+        details.push(`${plan.price.toLocaleString(locale, { maximumFractionDigits: 4 })} ${priceUnit}`);
+      }
+      return `<article><small>${this._escape(this._t(`plan_next_${direction}`))}</small>
+        <strong>${this._escape(status)}</strong>
+        ${details.some(Boolean) ? `<small>${this._escape(details.filter(Boolean).join(" · "))}</small>` : ""}
+      </article>`;
+    };
+    return `<div class="health-grid operation-plan">
+      ${row("charge", charge)}
+      ${row("discharge", discharge)}
+    </div>`;
+  }
+
+  _liveBatteryFlow(nextAction, direction) {
+    const attributes = nextAction?.attributes || {};
+    const charging = direction === "charge";
+    const state = charging ? "charging_active" : "discharging_active";
+    if (nextAction?.state !== state && attributes[`group_${direction}_requested`] !== true) return null;
+    const acSide = charging ? "input" : "output";
+    const sources = [
+      [attributes[`observed_group_${acSide}_w`], `plan_${direction}_active`],
+      [attributes[`observed_member_${acSide}_w`], charging ? "price_preview_member_charging" : "price_preview_member_discharging"],
+      [attributes[`observed_group_battery_${direction}_w`], charging ? "price_preview_battery_charging" : "price_preview_battery_discharging"],
+    ];
+    const [power, label] = sources.find(([watts]) => Number.isFinite(watts) && watts >= 30)
+      || [null, `price_preview_${direction}_requested`];
+    return { power, label };
+  }
+
+  _pricePreview() {
+    const t = (key) => this._escape(this._t(key));
+    const format = new Intl.DateTimeFormat(this._hass?.locale?.language, {
+      weekday: "short", hour: "2-digit", minute: "2-digit",
+      timeZone: this._hass?.config?.time_zone || undefined,
+    });
+    const time = (stamp) => format.format(new Date(stamp));
+    const messages = this._regulationMessages();
+    const previews = messages.map(({ title, nextAction }) => {
+      const { price_forecast: preview, charge, discharge } = nextAction?.attributes || {};
+      const periods = (preview?.periods || []).filter(({ start, end, price }) =>
+        Number.isFinite(price) && Number.isFinite(Date.parse(start)) && Date.parse(end) > Date.parse(start));
+      const unit = preview?.unit || "";
+      const value = (price) => `${price.toLocaleString(this._hass?.locale?.language, { maximumFractionDigits: 4 })} ${unit}`.trim();
+      const heading = messages.length > 1 ? `<h3>${this._escape(title)}</h3>` : "";
+      const liveCharge = this._liveBatteryFlow(nextAction, "charge");
+      const liveDischarge = this._liveBatteryFlow(nextAction, "discharge");
+      const live = [liveCharge, liveDischarge].filter(Boolean).map(({ label, power }) =>
+        `<p class="price-preview-live"><strong>${t(label)}</strong>
+          ${power != null ? `${this._escape(power.toLocaleString(this._hass?.locale?.language))} W` : ""}</p>`
+      ).join("");
+      const current = Number.isFinite(preview?.current_price)
+        ? `<p>${t("price_preview_current")} <strong>${this._escape(value(preview.current_price))}</strong></p>` : "";
+      if (!periods.length) return `${heading}${live}${current}<p>${t("price_preview_missing")}</p>`;
+      const low = periods.reduce((best, point) => point.price < best.price ? point : best);
+      const high = periods.reduce((best, point) => point.price > best.price ? point : best);
+      const chargeWindows = preview?.charge_windows ?? [charge];
+      const chargeOpportunities = preview?.charge_opportunities ?? [];
+      const dischargeWindows = preview?.discharge_windows ?? [discharge];
+      const overlaps = (start, end, windows) => windows.some(
+        (window) => start < Date.parse(window?.end) && end > Date.parse(window?.start)
+      );
+      const windowMembers = (start, end, windows) => [...new Set(windows
+        .filter((window) => overlaps(start, end, [window]))
+        .flatMap((window) => Array.isArray(window.members) ? window.members : []))].join(", ");
+      const opportunity = discharge?.status === "price_opportunity";
+      const dischargeLabel = opportunity ? "price_preview_discharge_possible" : "price_preview_discharge_planned";
+      const chargeRanges = [], opportunityRanges = [], dischargeRanges = [];
+      const addRange = (ranges, start, end, members = "") => {
+        const previous = ranges.at(-1);
+        if (previous?.end === start && previous.members === members) previous.end = end;
+        else ranges.push({ start, end, members });
+      };
+      const rows = periods.map(({ start, end, price, current }) => {
+        const startMs = Date.parse(start);
+        const endMs = Date.parse(end);
+        const inChargeWindow = overlaps(startMs, endMs, chargeWindows);
+        const canCharge = !inChargeWindow && overlaps(startMs, endMs, chargeOpportunities);
+        const inDischargeWindow = overlaps(startMs, endMs, dischargeWindows);
+        const chargeMembers = inChargeWindow ? windowMembers(startMs, endMs, chargeWindows) : "";
+        const dischargeMembers = inDischargeWindow ? windowMembers(startMs, endMs, dischargeWindows) : "";
+        if (inChargeWindow) addRange(chargeRanges, startMs, endMs, chargeMembers);
+        if (canCharge) addRange(opportunityRanges, startMs, endMs);
+        if (inDischargeWindow) addRange(dischargeRanges, startMs, endMs, dischargeMembers);
+        const actions = [
+          current && liveCharge ? ["charge", liveCharge.label]
+            : inChargeWindow ? ["charge", "price_preview_charge_planned", chargeMembers]
+            : canCharge && ["charge opportunity", "price_preview_charge_possible"],
+          current && liveDischarge
+            ? ["discharge", liveDischarge.label]
+            : inDischargeWindow && [`discharge${opportunity ? " opportunity" : ""}`, dischargeLabel, dischargeMembers],
+        ].filter(Boolean).map(([kind, label, members]) => `<span class="preview-action ${kind}">${t(label)}${members ? ` · ${this._escape(members)}` : ""}</span>`).join(" ");
+        const relative = high.price === low.price ? 50 : Math.round(100 * (price - low.price) / (high.price - low.price));
+        return `<tr><th scope="row">${this._escape(time(startMs))} – ${this._escape(time(endMs))}</th>
+          <td><span>${this._escape(value(price))}</span><span class="price-preview-bar" aria-hidden="true"><i style="width:${Math.max(3, relative)}%"></i></span></td>
+          <td>${actions || "–"}</td></tr>`;
+      });
+      const windowSummary = (title, ranges, help) => {
+        const times = ranges.slice(0, 3).map(({ start, end, members }) =>
+          `<li>${this._escape(time(start))} – ${this._escape(time(end))}${members ? ` · ${this._escape(members)}` : ""}</li>`).join("");
+        return times || help
+          ? `<section class="price-preview-ranges"><h3>${t(title)}</h3>
+            ${times ? `<ul>${times}</ul>` : ""}${help ? `<p>${t(help)}</p>` : ""}</section>`
+          : "";
+      };
+      const rangeSummary =
+        (chargeRanges.length ? windowSummary("price_preview_charge_schedule", chargeRanges)
+          : opportunityRanges.length ? windowSummary("price_preview_charge_opportunities", opportunityRanges, "price_preview_charge_opportunity_help")
+          : windowSummary("price_preview_charge_schedule", [], charge ? `plan_${charge.status}` : "plan_no_charge_window")) +
+        windowSummary(opportunity ? "price_preview_opportunities" : "price_preview_schedule", dischargeRanges,
+          opportunity && dischargeRanges.length ? "price_preview_opportunity_help" : null);
+      return `${heading}${live}${current}<div class="health-grid price-preview-stats">
+        <article><small>${t("price_preview_low")}</small><strong>${this._escape(value(low.price))}</strong><small>${this._escape(time(low.start))}</small></article>
+        <article><small>${t("price_preview_high")}</small><strong>${this._escape(value(high.price))}</strong><small>${this._escape(time(high.start))}</small></article>
+      </div>${rangeSummary}<div class="price-preview-table" tabindex="0" role="region" aria-label="${t("price_preview")}">
+        <table><thead><tr><th scope="col">${t("price_preview_period")}</th><th scope="col">${t("price_preview_import")}</th>
+        <th scope="col">${t("price_preview_plan")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+      </div>`;
+    }).join("");
+    return `<section class="section price-preview"><div class="section-head"><h2>${t("price_preview")}</h2></div>
+      ${previews || `<p>${t("price_preview_missing")}</p>`}</section>`;
+  }
+
+  _energyBudget(nextAction) {
+    const plan = nextAction?.attributes?.economics;
+    if (!plan) return "";
+    const locale = this._hass?.locale?.language;
+    const metrics = [
+      ["reserved_kwh", "cost_reserved"],
+      ["available_kwh", "cost_available"],
+      ["top_up_kwh", "cost_top_up"],
+    ].filter(([key]) => Number.isFinite(plan[key])).map(([key, label]) =>
+      `<div><dt>${this._escape(this._t(label))}</dt><dd>${this._escape(
+        plan[key].toLocaleString(locale, { maximumFractionDigits: 2 })
+      )} kWh</dd></div>`);
+    const solarReserve = (plan.summer_grid_charge || []).map((member) => {
+      const amount = (value) => this._escape(value.toLocaleString(locale, { maximumFractionDigits: 2 }));
+      return `<p><strong>${this._escape(member.name)}</strong> ·
+        ${amount(member.forecast_surplus_kwh)} kWh ${this._escape(this._t("cost_expected_pv_surplus"))} +
+        ${amount(member.extra_buffer_pct)} ${this._escape(this._t("cost_extra_pv_buffer"))}</p>`;
+    }).join("");
+    return `<div class="energy-budget"><h4>${this._escape(this._t("cost_plan"))}</h4>
+      <p>${this._escape(this._t(`cost_${plan.status}`))}</p>
+      ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}${solarReserve}
+    </div>`;
+  }
+
+  _portalNavigation() {
+    const links = [
+      ["overview", "overview"],
+      ["groups", "systems_groups"],
+      ["energy", "energy"],
+      ["economics", "economics"],
+      ["controls", "controls"],
+      ["settings", "menu_settings"],
+    ];
+    const buttons = links.map(([view, label]) => {
+      const selected = this._view === view;
+      return `<button type="button" class="tab ${selected ? "active" : ""}" data-view="${view}"
+        aria-current="${selected ? "page" : "false"}">${this._escape(this._t(label))}</button>`;
+    });
+    return `<nav class="portal-nav" aria-label="${this._escape(this._t("dashboard_views"))}">${buttons.join("")}</nav>`;
+  }
+
   _healthSummary(systems, entities) {
-    if (!systems.length) return "";
     const online = systems.filter((system) => system.online).length;
     const offline = systems.length - online;
     const ageRanks = { fresh: 0, recent: 1, delayed: 2, stale: 3 };
@@ -1200,9 +1449,29 @@ class BatterySmartFlowDashboard extends HTMLElement {
       (result, bucket) => ageRanks[bucket] > ageRanks[result] ? bucket : result,
       knownBuckets[0] || null,
     );
-    const needsAttention = offline > 0 || knownBuckets.length < systems.length ||
-      (oldest !== null && ageRanks[oldest] >= ageRanks.delayed);
-    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : "all_online"))}</span></div><div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div></section>`;
+    const warnings = systems.flatMap((system, index) => {
+      const bucket = buckets[index];
+      const reasons = [];
+      if (!system.online) reasons.push(this._t("offline"));
+      if (bucket == null) reasons.push(this._t("health_telemetry_missing"));
+      else if (ageRanks[bucket] >= ageRanks.delayed) {
+        reasons.push(this._t(`health_telemetry_${bucket}`));
+      }
+      return reasons.length ? [`${system.name || this._t("system")} · ${reasons.join(" · ")}`] : [];
+    });
+    const messages = this._regulationMessages();
+    const needsAttention = warnings.length > 0 || messages.some((message) => message.blocked);
+    if (!systems.length && !messages.length) return "";
+    const warningList = warnings.length ? `<ul class="health-warnings">${warnings.map((warning) =>
+      `<li>${this._escape(warning)}</li>`).join("")}</ul>` : "";
+    const details = `${messages.map(({ title, summary, values, nextAction, priceUnit }) => `<article class="regulation-message">
+        <div class="regulation-now"><h3>${this._escape(title)}</h3><p>${this._escape(summary)}</p>
+        ${values.length ? `<small>${this._escape(values.join(" · "))}</small>` : ""}</div>
+        ${this._operationPlan(nextAction, priceUnit)}
+        ${this._energyBudget(nextAction)}
+        <button type="button" class="tab price-preview-link" data-view="energy">${this._escape(this._t("price_preview"))}</button>
+      </article>`).join("")}`;
+    return `<section class="section health-summary ${needsAttention ? "attention" : "healthy"}" aria-label="${this._escape(this._t("system_health"))}"><div class="section-head"><h2>${this._escape(this._t("system_health"))}</h2><span class="health-state">${this._escape(this._t(needsAttention ? "attention" : systems.length ? "all_online" : "health_waiting"))}</span></div>${warningList}${details}<div class="health-grid"><article><small>${this._escape(this._t("online_systems"))}</small><strong>${online} / ${systems.length}</strong></article><article><small>${this._escape(this._t("offline_systems"))}</small><strong>${offline}</strong></article><article><small>${this._escape(this._t("oldest_telemetry"))}</small><strong>${this._escape(oldest == null ? this._t("unavailable") : this._t(`telemetry_age_${oldest}`))}</strong></article></div></section>`;
   }
 
   _batteryGroupMemberCard(member, entities) {
@@ -1823,7 +2092,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
     }
     this._optionsOpeningStepId = null;
     this._optionsFlowError = "";
-    if (step.step_id === "group_wizard_strategy") this._groupWizardActive = true;
+    if (["group_create", "group_edit", "group_wizard_strategy"].includes(step.step_id)) {
+      this._groupWizardActive = true;
+    }
     this._optionsRevision = (this._optionsRevision || 0) + 1;
       const title = step.step_id === "general" ? this._t("general_settings")
       : step.step_id === "smart_mode" ? this._t("smart_mode_settings")
@@ -1847,6 +2118,13 @@ class BatterySmartFlowDashboard extends HTMLElement {
       if (this._groupWizardActive) menuLabel.topology_save = "options_continue";
       const buttons = (step.menu_options || []).filter((option) => menuLabel[option]).map((option) => `<button class="apply ${option === "topology_save" ? "topology-save-button" : ""}" type="button" data-options-next="${this._escape(option)}">${this._escape(this._t(menuLabel[option]))}</button>`).join("");
       let preview = "";
+      const missingOutputs = Number(step.description_placeholders?.missing_outputs || 0);
+      if (missingOutputs > 0) {
+        const message = (this._hass?.language || "").startsWith("de")
+          ? `Ordne die fehlenden Geräteausgänge zu (${missingOutputs}), damit die Gruppe regeln kann.`
+          : `Assign the missing device outputs (${missingOutputs}) to enable group regulation.`;
+        preview = `<p class="topology-form-errors" role="alert">${this._escape(message)}</p>`;
+      }
       if (step.step_id === "group_wizard_review") {
         const name = step.description_placeholders?.group_name || "";
         const count = step.description_placeholders?.member_count || "0";
@@ -1869,9 +2147,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       if (step.step_id === "topology_review" && step.description_placeholders?.topology_preview) {
         try {
           const topology = JSON.parse(step.description_placeholders.topology_preview);
-          preview = `<section class="topology-review-card"><h3>${this._escape(this._t("topology_review"))}</h3>${this._topologyDiagram(topology)}</section>`;
+          preview += `<section class="topology-review-card"><h3>${this._escape(this._t("topology_review"))}</h3>${this._topologyDiagram(topology)}</section>`;
         } catch {
-          preview = `<p class="muted">${this._escape(this._t("topology_preview_unavailable"))}</p>`;
+          preview += `<p class="muted">${this._escape(this._t("topology_preview_unavailable"))}</p>`;
         }
       }
       content = `${this._groupWizardChrome(step.step_id)}${this._groupWizardActive ? "" : this._topologyWizardChrome(step.step_id)}${preview}<div class="topology-menu-actions">${buttons}</div>`;
@@ -1948,11 +2226,13 @@ class BatterySmartFlowDashboard extends HTMLElement {
         ? step.step_id.endsWith("_add") ? "topology_add_to_draft"
           : step.step_id.endsWith("_edit") ? "topology_apply_draft"
             : step.step_id.endsWith("_remove") ? "topology_remove_from_draft" : "options_continue"
-        : ["general", "smart_mode", "expert_cell_voltage_config", "group_edit", "group_remove", "native_zendure_controller"].includes(step.step_id) ? "options_save" : "options_continue";
+        : ["general", "smart_mode", "expert_cell_voltage_config", "group_remove", "native_zendure_controller"].includes(step.step_id) ? "options_save" : "options_continue";
       const groupBack = step.step_id === "group_wizard_strategy" ? `<button class="apply options-wizard-back" type="button" data-options-next="group_wizard_back_systems">${this._escape(this._t("group_wizard_back_systems"))}</button>` : "";
       content = `${this._groupWizardChrome(step.step_id)}${this._groupWizardActive ? "" : this._topologyWizardChrome(step.step_id)}${fields}${groupBack}<button class="apply" type="button" data-options-submit>${this._escape(this._t(topologyAction))}</button>`;
     }
-    const errors = Object.values(step.errors || {}).map((key) => this._t(key)).filter(Boolean);
+    const errors = Object.values(step.errors || {}).map((key) => (
+      this._t(key).replace("{source}", step.description_placeholders?.conflicting_source || "")
+    )).filter(Boolean);
     if (errors.length) content = `<div class="topology-form-errors" role="alert">${errors.map((message) => `<p>${this._escape(message)}</p>`).join("")}</div>${content}`;
     this._optionsFlowTitle = title;
     this._optionsStepId = step.step_id;
@@ -3183,7 +3463,45 @@ class BatterySmartFlowDashboard extends HTMLElement {
         .dashboard-area{margin-top:22px;padding:20px;border-color:var(--area-border);border-left:4px solid var(--area-accent);background:linear-gradient(135deg,var(--area-tint),#1b1e21 58%)}.settings-area{--area-accent:#35bddc;--area-border:#2c6174;--area-tint:#1a2930}.debug-area{--area-accent:#f0c34e;--area-border:#655634;--area-tint:#29261e}.training-area{--area-accent:#56cf83;--area-border:#315b43;--area-tint:#1b2921}.dashboard-area .section-head{justify-content:flex-start;align-items:flex-start;padding-bottom:13px;border-bottom:1px solid var(--area-border)}.dashboard-area .section-head h2{font-size:18px}.dashboard-area .section-head small{display:block;margin-top:6px;line-height:1.45}.dashboard-entry-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}.dashboard-entry-card{min-width:0;padding:15px;border:1px solid #41464b;border-radius:10px;background:#24292d}.settings-entry{border-top:2px solid #35bddc}.debug-entry{border-top:2px solid #f0c34e}.dashboard-entry-title{margin:0 0 10px;color:#e7e9eb;font-size:14px}.settings-actions{display:flex;flex-wrap:wrap;gap:8px}.settings-actions .apply{align-self:auto}.dashboard-entry-card select{width:100%;min-width:0;background:#171a1d;color:#eef0f1;border:1px solid #4b535a;border-radius:7px;padding:10px;font:inherit}.debug-duration{display:grid;gap:6px}.debug-entry .apply{margin-top:8px}.training-entry-card{gap:12px;border-top:2px solid #56cf83}.training-status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr));gap:8px}.training-status-grid>div{display:flex;flex-direction:column;gap:6px;min-width:0;padding:10px 12px;border:1px solid #3a4540;border-radius:8px;background:#202722}.training-status-grid small{color:var(--muted);font-size:11px}.training-status-grid strong{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.training-controls{padding-top:12px;border-top:1px solid #3a4540}.training-control-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}.training-control-grid>div{display:grid;gap:6px}.training-control-grid select{width:100%;min-width:0;background:#171a1d;color:#eef0f1;border:1px solid #4b535a;border-radius:7px;padding:10px;font:inherit}.training-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}.settings-notice{padding:10px 14px;border:1px solid #3f6578;border-radius:8px;background:#1e3440;color:#dff8ff}.option-editor{max-width:100%}.option-editor-body{display:grid;gap:10px}.option-editor .apply{margin-top:10px}.option-field{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:10px 0;padding:10px;border:1px solid #343a40;border-radius:7px;background:#24282c}.option-field input[type=checkbox]{width:24px;height:24px}.option-field input:not([type=checkbox]),.option-field select{max-width:55%}.option-editor .apply[data-options-next]{display:block;width:100%;text-align:left;align-self:stretch}
         .metric-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px}.metric-group{padding:13px;border:1px solid #343a40;border-radius:11px;background:#202428}.metric-group h3{font-size:13px;color:#c7cbd0;margin:0 0 10px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px}.metric-grid .metric{min-height:108px;padding:15px}.metric-grid .metric:nth-child(2){border-top-color:var(--green)}.metric-grid .metric:nth-child(3){border-top-color:var(--amber)}
         .systems{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px}.system-card{min-width:0;position:relative;padding:17px;background:#172b3a;border:1px solid #2476a8;border-left:4px solid var(--cyan);border-radius:11px}.system-head,.pack-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.system-head>div:first-child,.pack-head>div:first-child{min-width:0;overflow-wrap:anywhere}.system-head strong,.pack-head strong{font-size:16px}.system-head small,.pack-head small,.device-meta{display:block;color:#b7c4ce;margin-top:6px}.system-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}.status{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:5px 9px;font-size:11px;white-space:nowrap}.status.offline{border-color:#744849;background:#3a2526;color:#f2aaaa}.packs{margin:15px 0 0 14px;padding-left:16px;border-left:1px solid #388ebc;display:grid;gap:9px}.pack-card{min-width:0;position:relative;padding:12px;background:#202b35;border:1px solid #475563;border-radius:9px}.pack-card.has-soc{background:#202b35}.pack-card.has-soc::before{content:"";position:absolute;z-index:0;inset:4px;box-sizing:border-box;background:var(--soc-fill);border:1px solid var(--soc-border);border-radius:5px;clip-path:inset(0 calc(100% - var(--soc-level)) 0 0 round 5px);pointer-events:none}.pack-card.has-soc::after{content:"";position:absolute;z-index:0;inset:5px;border-radius:4px;clip-path:inset(0 calc(100% - var(--soc-level)) 0 0 round 4px);pointer-events:none;opacity:0;background-image:radial-gradient(circle,transparent 43%,rgba(255,255,255,.58) 49%,rgba(255,255,255,.12) 57%,transparent 64%),radial-gradient(circle,transparent 43%,rgba(255,255,255,.4) 49%,rgba(255,255,255,.1) 57%,transparent 64%);background-size:30px 24px,42px 34px;background-position:0 0,10px 7px}.pack-card.has-soc[data-flow="charge"]::after{opacity:.7;animation:bubbles-right 3s linear infinite}.pack-card.has-soc[data-flow="discharge"]::after{opacity:.7;animation:bubbles-left 3s linear infinite}.pack-head{position:relative;z-index:1}@keyframes bubbles-right{from{background-position:0 0,10px 7px}to{background-position:120px 0,178px 7px}}@keyframes bubbles-left{from{background-position:120px 0,178px 7px}to{background-position:0 0,10px 7px}}@media(prefers-reduced-motion:reduce){.pack-card.has-soc[data-flow]::after{animation:none;opacity:.35}}.pack-card[data-soc-band="low"]{--soc-fill:rgba(240,118,91,.28);--soc-border:rgba(196,72,48,.85)}.pack-card[data-soc-band="medium"]{--soc-fill:rgba(240,195,78,.24);--soc-border:rgba(178,132,25,.85)}.pack-card[data-soc-band="high"]{--soc-fill:rgba(86,207,131,.24);--soc-border:rgba(37,145,77,.85)}.pack-card strong{display:block}.pack-card small{display:block;color:#aeb8c1;margin-top:5px}.details-toggle{border:1px solid #3f6578;background:#1a3442;color:#d9f5fb;border-radius:7px;padding:6px 9px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.details-toggle:hover,.details-toggle:focus-visible{border-color:var(--cyan);outline:2px solid var(--cyan);outline-offset:2px}.hover-details{display:none;position:absolute;z-index:5;left:12px;top:calc(100% + 9px);width:min(380px,calc(100vw - 56px));padding:14px;background:#f7f8fa;color:#20242a;border:1px solid #d7dce2;border-radius:10px;box-shadow:0 12px 35px #0008}.system-card.details-open>.hover-details,.pack-card.details-open>.hover-details{display:block}@media(hover:hover){.system-card:hover:not(:has(.pack-card:hover))>.hover-details,.pack-card:hover>.hover-details{display:block}}.hover-details h3{margin:0 0 9px;font-size:14px}.detail-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #e5e7eb;font-size:12px}.detail-row span{color:#59616a}.detail-row strong{text-align:right;overflow-wrap:anywhere}.empty{color:var(--muted);padding:18px;border:1px dashed #485058;border-radius:10px}.inventory{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px}.entity{min-width:0;display:flex;justify-content:space-between;gap:12px;padding:11px 12px;border-bottom:1px solid #34383d}.entity span{color:#c2c6ca;overflow-wrap:anywhere}.entity strong{font-weight:550;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.signal-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px}.signal-entity{display:grid;grid-template-columns:minmax(0,1fr) minmax(5rem,auto);align-items:start}.signal-value{max-width:45%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.footer{color:#858c92;font-size:12px;margin:16px 2px}
-        .health-summary{border-left:4px solid var(--green)}.health-summary.attention{border-left-color:var(--amber)}.health-state{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:6px 10px;font-size:12px;white-space:nowrap}.health-summary.attention .health-state{border-color:#78633b;background:#3a3120;color:#f4d78b}.health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.health-grid article{display:flex;flex-direction:column;gap:7px;padding:12px 14px;background:#25292d;border:1px solid #3a3f44;border-radius:9px}.health-grid small{color:var(--muted)}.health-grid strong{font-size:18px;font-variant-numeric:tabular-nums}
+        .portal-nav{display:flex;flex-wrap:wrap;gap:5px;padding:6px;border:1px solid var(--line);border-radius:12px;background:#191d21}
+        .portal-nav .tab{border-color:transparent;background:transparent;border-radius:8px;min-height:40px}
+        .portal-nav .tab:hover{background:#252b31}.portal-nav .tab.active{background:#243843;border-color:#42687c;color:#f0f9fc}
+        .price-preview-link{width:max-content;max-width:100%}
+        .price-preview-stats{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:12px}
+        .price-preview-table{max-height:24rem;overflow:auto;border:1px solid var(--line);border-radius:10px}
+        .price-preview-table table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+        .price-preview-table thead{position:sticky;top:0;background:#20272c}
+        .price-preview-table th,.price-preview-table td{padding:10px;text-align:left;border-bottom:1px solid var(--line)}
+        .price-preview-table tbody th{font-weight:500}
+        .price-preview-bar{display:block;height:4px;min-width:40px;margin-top:4px;border-radius:5px;background:#263840}
+        .price-preview-bar i{display:block;height:100%;border-radius:inherit;background:#6da5bb}
+        .preview-action{display:inline-block;padding:3px 7px;margin:1px;border-radius:5px;background:#243843;color:#e1f4fb}
+        .preview-action.discharge{background:#254135;color:#d6f4e3}
+        .preview-action.opportunity{background:#353021;color:#f0dea5}
+        .price-preview-live{color:#bdeace}
+        .price-preview-ranges{margin:12px 0;padding:12px 14px;border:1px solid var(--line);border-radius:10px}
+        .price-preview-ranges h3,.price-preview-ranges p{margin:0}
+        .price-preview-ranges ul{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0;padding:0;list-style:none}
+        .price-preview-ranges li{background:#243038;padding:4px 8px;border-radius:6px;font-variant-numeric:tabular-nums}
+        .health-summary{padding:clamp(15px,2.5vw,26px);background:#1a2024}
+        .health-summary>.section-head{margin-bottom:14px;flex-wrap:wrap}
+        .health-state{border:1px solid #40604c;background:#20352a;color:#a8e5ba;border-radius:999px;padding:6px 10px;font-size:12px}
+        .health-summary.attention .health-state{border-color:#78633b;background:#3a3120;color:#f4d78b}
+        .health-warnings{margin:0 0 16px;padding:10px 14px 10px 32px;border:1px solid #6e5534;border-radius:9px;background:#322a1c;color:#f4d78b;line-height:1.5}
+        .regulation-message{display:grid;gap:12px;margin:0 0 16px}
+        .regulation-now{padding:15px 17px;border:1px solid #394b56;border-radius:10px;background:#222d34}
+        .regulation-now h3,.energy-budget h4{font-size:13px;margin:0 0 5px;color:#b8ccd7}
+        .regulation-now p{font-size:17px;font-weight:550;line-height:1.4;margin:0}
+        .regulation-now small{color:#bbc5cc;display:block;margin-top:6px}
+        .health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+        .health-grid article{display:grid;align-content:start;gap:5px;min-width:0;padding:11px 13px;background:#242a2e;border:1px solid #3a434a;border-radius:9px}
+        .health-grid small{color:#b8c1c8;line-height:1.4}.health-grid strong{font-size:16px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+        .health-grid.operation-plan{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .operation-plan article{border-top:2px solid #638575}.operation-plan article+article{border-top-color:#758fac}
+        .energy-budget{padding:13px 16px;border:1px solid #414a51;border-radius:10px}
+        .energy-budget p{margin:0;color:#c3cdd4;line-height:1.45}.energy-budget dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,135px),1fr));gap:10px;margin:10px 0 0}
+        .energy-budget dt{font-size:12px;color:#b8c1c8}.energy-budget dd{margin:3px 0 0;font-size:18px;font-variant-numeric:tabular-nums}
+        @media(max-width:520px){.health-grid.operation-plan{grid-template-columns:1fr}.portal-nav .tab{padding-inline:10px}}
         @media(max-width:900px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.topology{grid-template-columns:1fr}.link{height:20px;width:1px;margin:auto}}@media(max-width:520px){header{align-items:flex-start;flex-direction:column}.metrics{grid-template-columns:1fr 1fr}.systems{grid-template-columns:1fr}.health-grid{grid-template-columns:1fr}.section-head{align-items:flex-start;flex-direction:column}.forecast-source-hint{max-width:100%;text-align:left}.hover-details{position:static;width:auto;max-width:100%;margin-top:12px;box-shadow:none}.system-card.details-open>.hover-details,.pack-card.details-open>.hover-details{display:block}.metric{padding:13px}.section{padding:15px}}@media(max-width:360px){nav{gap:5px;overflow-x:auto}.tab{flex:0 0 auto;padding:8px 10px}.metrics{grid-template-columns:1fr}.health-grid{gap:7px}}
         .flow-grid{display:grid;gap:9px;margin-top:10px}.flow-row{display:grid;grid-template-columns:minmax(85px,.8fr) minmax(110px,1.6fr) minmax(85px,.8fr) minmax(80px,.6fr);gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.flow-node{min-width:0;padding:9px 11px;border:1px solid #41464b;border-radius:9px;background:#272b2f}.flow-node small{display:block;color:var(--muted);font-size:10px}.flow-node strong{display:block;margin-top:3px;font-size:13px}.flow-route{min-width:0;display:flex;flex-direction:column;gap:5px}.flow-label{color:#c3c7ca;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.flow-direction{display:flex;align-items:center;gap:8px;color:var(--cyan)}.flow-direction>span{font-size:20px;line-height:1}.flow-track{height:8px;flex:1;background:#30353a;border-radius:999px;overflow:hidden}.flow-track i{display:block;height:100%;background:linear-gradient(90deg,#1bb7df,#54d08a);border-radius:999px}.flow-route.unavailable .flow-track{background:repeating-linear-gradient(135deg,#363b40,#363b40 4px,#25292d 4px,#25292d 8px)}.flow-route.unavailable .flow-track i{display:none}.flow-value{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.flow-scale{color:var(--muted)}
         @media(max-width:520px){.flow-row{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr) minmax(0,.7fr);gap:6px}.flow-node{padding:8px 7px}.flow-node strong{font-size:12px;overflow-wrap:anywhere}.flow-label{font-size:10px}.flow-direction{gap:4px}.flow-direction>span{font-size:16px}.flow-value{font-size:12px}}@media(max-width:360px){.flow-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.flow-route{grid-column:1 / -1}.flow-value{grid-column:2;text-align:right}}
@@ -3245,7 +3563,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       <main class="shell">
         <header><div><p class="sub">${this._escape(this._t("subtitle"))}</p><small class="versionline">${this._escape(this._t("version"))} ${this._escape(this._panel?.config?.integration_version || "—")} · ${this._escape(this._t("dashboard_version"))} ${this._escape(this._panel?.config?.dashboard_version || "—")}</small><a class="home-link" href="/" data-home>← ${this._escape(this._t("home_assistant"))}</a></div><div class="badge">● ${this._escape(this._t("live"))} ${this._escape(updated)}</div></header>
         <section class="section"><div class="section-head"><h2>${this._escape(this._t("energy_overview"))}</h2><small>${this._escape(this._t("live_values"))}</small></div><div class="metric-groups">${cards}</div></section>
-        <nav aria-label="${this._escape(this._t("dashboard_views"))}"><button class="tab ${this._view === "overview" ? "active" : ""}" data-view="overview">${this._escape(this._t("overview"))}</button><button class="tab ${this._view === "energy" ? "active" : ""}" data-view="energy">${this._escape(this._t("energy"))}</button><button class="tab ${this._view === "economics" ? "active" : ""}" data-view="economics">${this._escape(this._t("economics"))}</button><button class="tab ${this._view === "groups" ? "active" : ""}" data-view="groups">${this._escape(this._t("systems_groups"))}</button><button class="tab ${this._view === "controls" ? "active" : ""}" data-view="controls">${this._escape(this._t("controls"))}</button><button class="tab ${this._view === "settings" ? "active" : ""}" data-view="settings">${this._escape(this._t("menu_settings"))}</button></nav>
+        ${this._portalNavigation()}
         ${this._optionsFlowEditor()}
         ${activeContent}
         <p class="footer">${this._escape(this._t("footer"))}</p>
@@ -3301,4 +3619,10 @@ class BatterySmartFlowDashboard extends HTMLElement {
   }
 }
 
-customElements.define("battery-smartflow-ai-hems-dashboard", BatterySmartFlowDashboard);
+const panelVersion = new URL(import.meta.url).searchParams.get("v");
+const panelName = /^[0-9a-f]{12}$/.test(panelVersion || "")
+  ? `battery-smartflow-ai-hems-dashboard-${panelVersion}`
+  : "battery-smartflow-ai-hems-dashboard";
+if (!customElements.get(panelName)) {
+  customElements.define(panelName, BatterySmartFlowDashboard);
+}

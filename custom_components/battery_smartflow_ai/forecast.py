@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+import math
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -42,6 +43,8 @@ class ForecastSummary:
     peak_tomorrow_w: float = 0.0
 
     pv_outlook: str = PV_OUTLOOK_UNKNOWN
+    # Interval start, duration in hours, gross energy in Wh.
+    power_intervals: tuple[tuple[datetime, float, float], ...] = ()
 
 
 def _to_float(v: Any, default: float | None = None) -> float | None:
@@ -164,6 +167,21 @@ def _iter_halfhour_intervals(attrs: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _get_interval_power_kw(item: dict[str, Any]) -> float | None:
     return _to_float(item.get("pv_estimate"), None)
+
+
+def _sensor_power_intervals(hass, sources) -> tuple[tuple[datetime, float, float], ...]:
+    intervals = {}
+    for entity_id, target_date in sources:
+        attrs, _ = _read_sensor_attrs(hass, entity_id)
+        hourly = _iter_hourly_intervals(attrs)
+        hours = 1.0 if hourly else 0.5
+        for item in hourly or _iter_halfhour_intervals(attrs):
+            start = _normalize_dt(item.get("period_start"))
+            power = _get_interval_power_kw(item)
+            if start is not None and start.date() == target_date and power is not None:
+                if math.isfinite(power) and power >= 0:
+                    intervals[start] = (start, hours, power * hours * 1000)
+    return tuple(intervals[key] for key in sorted(intervals))
 
 
 def _net_interval_energy_kwh(
@@ -525,6 +543,9 @@ def build_forecast_summary(
         peak_today_w=round(float(peak_today_w), 1),
         peak_tomorrow_w=round(float(peak_tomorrow_w), 1),
         pv_outlook=pv_outlook,
+        power_intervals=_sensor_power_intervals(
+            hass, ((today_entity_id, today), (tomorrow_entity_id, tomorrow))
+        ),
     )
 
 
@@ -646,6 +667,7 @@ def build_energy_forecast_summary(
         peak_today_w=round(peak_today_w, 1),
         peak_tomorrow_w=round(peak_tomorrow_w, 1),
         pv_outlook=outlook,
+        power_intervals=tuple(intervals),
     )
 
 

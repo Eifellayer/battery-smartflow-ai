@@ -351,6 +351,16 @@ class NativePowerControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, CommandExecutionStatus.APPLIED)
         self.assertEqual(target._transport.commands[-1].device_id, second_id)
 
+        target._group_members = frozenset({DEVICE, second_id})
+        self.assertEqual(
+            target._hardware_control_state(second_id), DeviceControlState.ENABLED
+        )
+        target._hems_gate.update(second_id, measured(True), capability=VerificationLevel.VERIFIED)
+        target._inventory.set_hems_status(second_id, target._hems_gate.decision(second_id).status)
+        self.assertEqual(
+            target._hardware_control_state(second_id), DeviceControlState.HEMS_BLOCKED
+        )
+
     async def test_per_device_command_blocks_unconfigured_non_selected_system(self):
         target = runtime()
         result = await target.async_execute_device_command(

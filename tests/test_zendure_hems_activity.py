@@ -67,6 +67,20 @@ class HemsActivityTrackerTests(unittest.TestCase):
             tracker.measurement(now=reconnected + timedelta(seconds=30)).value
         )
 
+    def test_reconnect_waits_for_quiet_window_even_after_earlier_activity(self):
+        tracker = HemsActivityTracker(timeout_seconds=60)
+        tracker.set_monitoring(True, observed_at=NOW)
+        tracker.observe_energy(observed_at=NOW)
+        tracker.set_monitoring(False, observed_at=NOW + timedelta(seconds=20))
+        reconnected = NOW + timedelta(seconds=100)
+        tracker.set_monitoring(True, observed_at=reconnected)
+        self.assertFalse(tracker.measurement(now=reconnected).valid)
+        confirmed_at = reconnected + timedelta(seconds=61)
+        confirmed = tracker.measurement(now=confirmed_at)
+        self.assertTrue(confirmed.valid)
+        self.assertFalse(confirmed.value)
+        self.assertEqual(confirmed.observed_at, confirmed_at)
+
     def test_diagnostics_name_exact_activity_source(self):
         tracker = HemsActivityTracker(timeout_seconds=60)
         diagnostic = tracker.diagnostics(now=NOW)

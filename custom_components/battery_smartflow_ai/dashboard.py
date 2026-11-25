@@ -53,7 +53,7 @@ _SF800PLUS_IMAGE_URL = "/battery_smartflow_ai/images/sf800plus.png"
 _PANEL_NAME = "battery-smartflow-ai-hems-dashboard"
 _STATIC_PATH_KEY = f"{DOMAIN}_dashboard_static_registered"
 _STATIC_PATH_LOCK_KEY = f"{DOMAIN}_dashboard_static_registration_lock"
-DASHBOARD_VERSION = "1.0.68"
+DASHBOARD_VERSION = "1.0.76"
 
 _SYSTEM_SIGNAL_SENSOR_KEYS = (
     "native_zendure_status",
@@ -287,6 +287,16 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
             {
                 "entry_id": entry.entry_id,
                 "system": entry.title,
+                "regulation_status_entities": {
+                    key: entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, f"{DOMAIN}_{entry.entry_id}_{key}"
+                    )
+                    for key in (
+                        "engine_health", "ai_status", "decision_reason", "season_mode",
+                        "price_now", "effective_discharge_threshold", "grid_power",
+                        "next_action_state",
+                    )
+                },
                 "shadow_allocation_entity": entity_registry.async_get_entity_id(
                     "sensor",
                     DOMAIN,
@@ -453,9 +463,10 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
     # the check-and-register sequence so each instance cannot register the
     # same GET route before the other one marks it as registered.
     frontend_dir = Path(__file__).parent / "frontend"
-    panel_module_version = hashlib.sha256(
-        (frontend_dir / "hems-dashboard.js").read_bytes()
-    ).hexdigest()[:12]
+    panel_module = await hass.async_add_executor_job(
+        (frontend_dir / "hems-dashboard.js").read_bytes
+    )
+    panel_module_version = hashlib.sha256(panel_module).hexdigest()[:12]
 
     registration_lock = hass.data.setdefault(_STATIC_PATH_LOCK_KEY, asyncio.Lock())
     async with registration_lock:
@@ -541,7 +552,7 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
     await panel_custom.async_register_panel(
         hass,
         frontend_url_path=_PANEL_PATH,
-        webcomponent_name=_PANEL_NAME,
+        webcomponent_name=f"{_PANEL_NAME}-{panel_module_version}",
         sidebar_title="BSFAI Portal",
         sidebar_icon="mdi:solar-power-variant",
         module_url=f"{_PANEL_URL}?v={panel_module_version}",

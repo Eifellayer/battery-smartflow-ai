@@ -735,7 +735,7 @@ class ReserveChargeRule(BaseRule):
 
         # Grid charging must still be economically meaningful compared to the
         # upcoming high-price window. Feed-in tariff must not block this case.
-        min_profit_factor = 1.0 + (float(ctx.profit_margin_pct or 0.0) / 100.0)
+        min_profit_factor = engine._grid_charge_profit_factor(ctx)
         if float(price_now) * min_profit_factor > float(expected_peak_price):
             return None
             
@@ -776,7 +776,7 @@ class PvRule(BaseRule):
         if not bool(ctx.pv_sensor_valid):
             return None
 
-        planning = engine._evaluate_adaptive_planning(ctx)
+        planning = engine._evaluate_adaptive_planning(ctx) if ctx.economic_power_w is None else None
         manual_pv_surplus = bool(
             ctx.ai_mode == "manual"
             and ctx.manual_action == MANUAL_PV_SURPLUS
@@ -1270,8 +1270,14 @@ class DecisionEngine:
             ):
                 return "additional_battery_discharging_block"
 
+        if ctx.member_grid_charge_blocked and state in {
+            "ac_charge_learned", "ac_charge_planned", "ac_charge_price", "ac_charge_reserve",
+        }:
+            return "member_grid_charge_spread_not_met"
+
         if (
-            self._learned_planning_waits_for_window(ctx)
+            ctx.economic_power_w is None
+            and self._learned_planning_waits_for_window(ctx)
             and str(result.reason or "") != "very_cheap_force_charge"
             and state
             in {
@@ -2456,6 +2462,11 @@ class DecisionEngine:
 
         return False
 
+    @staticmethod
+    def _grid_charge_profit_factor(ctx: DecisionContext) -> float:
+        spread = ctx.member_grid_charge_spread_pct
+        return 1 + float(ctx.profit_margin_pct if spread is None else spread) / 100
+
     def _evaluate_adaptive_planning(self, ctx: DecisionContext) -> Optional[DecisionResult]:
         if self._learned_planning_waits_for_window(ctx):
             return None
@@ -2495,7 +2506,7 @@ class DecisionEngine:
 
         expected_peak_price = max(p.price for p in future_peaks)
 
-        min_profit_factor = 1 + (ctx.profit_margin_pct / 100)
+        min_profit_factor = self._grid_charge_profit_factor(ctx)
         required_peak_price = price_now * min_profit_factor
 
         if expected_peak_price < required_peak_price:
@@ -2607,6 +2618,34 @@ class DecisionEngine:
         candidates: list[tuple[int, str, DecisionResult]] = []
         self._collecting_candidates = True
         try:
+            economic_power = ctx.economic_power_w
+            if economic_power is not None and ctx.ai_mode == "automatic":
+                # The same schedule replaces the independent, potentially
+                # competing grid-charge and price-discharge rules.
+                for index, rule in enumerate((EmergencyRule(), PvHouseLoadPassthroughRule(), PvRule())):
+                    result = rule.evaluate(self, ctx)
+                    if result is not None:
+                        candidates.append((index, rule.__class__.__name__, result))
+                if economic_power >= 1:
+                    result = DecisionResult(
+                        "charge", "input", economic_power, 0.0,
+                        "economic_planning_charge",
+                    )
+                elif (
+                    economic_power <= -1
+                    and not ctx.discharge_blocked_by_soc_min
+                    and not ctx.cell_voltage_discharge_blocked
+                    and ctx.soc > ctx.soc_min
+                    and not self._pv_surplus_blocks_discharge(ctx)
+                ):
+                    result = DecisionResult(
+                        "discharge", "output", 0.0, min(ctx.max_discharge_w, -economic_power),
+                        "economic_price_discharge",
+                    )
+                else:
+                    result = self._idle_result(ctx, "economic_schedule_hold")
+                candidates.append((len(candidates), "EconomicSchedule", self._with_thresholds(ctx, result)))
+                return candidates
             for index, rule in enumerate(self._rules):
                 result = rule.evaluate(self, ctx)
                 if result is not None:

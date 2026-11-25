@@ -10,8 +10,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .core.models import ZendureTransport
-from .hardware.zendure.device_matrix import preferred_local_transport
+from .core.models import NativeDeviceIdentity, ZendureTransport
+from .hardware.zendure.device_matrix import (
+    ZENDURE_DEVICE_MATRIX,
+    preferred_local_transport,
+    resolve_zendure_device,
+)
 from .native_config_ui import native_serial_suffix
 
 SETUP_SCHEMA_VERSION = 1
@@ -65,6 +69,11 @@ def reconcile_device_setups(
             record.pop("transport", None)
         elif record.get("setup_status") == SETUP_UNSUPPORTED:
             record["setup_status"] = SETUP_REQUIRED
+        profile = resolve_zendure_device(identity) if supported and identity else None
+        if profile is not None:
+            record["profile_key"] = profile.profile_key
+        else:
+            record.pop("profile_key", None)
         model = getattr(identity, "product_model", None)
         if model:
             record["model"] = model
@@ -108,6 +117,31 @@ def reconcile_device_setups(
                     record["setup_status"] = SETUP_COMPLETE
 
     return {"version": SETUP_SCHEMA_VERSION, "devices": records}
+
+
+def native_device_profile_key(setup_map: Any, device_id: Any) -> str | None:
+    """Resolve the exact profile of a configured native device."""
+
+    if not isinstance(device_id, str) or not device_id:
+        return None
+    records = setup_map.get("devices") if isinstance(setup_map, Mapping) else None
+    record = records.get(device_id) if isinstance(records, Mapping) else None
+    if not isinstance(record, Mapping) or record.get("setup_status") != SETUP_COMPLETE:
+        return None
+    profile_key = record.get("profile_key")
+    if isinstance(profile_key, str) and profile_key in ZENDURE_DEVICE_MATRIX:
+        return profile_key
+
+    # Entries saved before profile_key was recorded still have the model alias.
+    model = record.get("model")
+    if not isinstance(model, str) or not model:
+        return None
+    profile = resolve_zendure_device(
+        NativeDeviceIdentity(
+            ZendureTransport.CLOUD_MQTT, device_id=device_id, product_model=model
+        )
+    )
+    return profile.profile_key if profile else None
 
 
 def save_device_setup(

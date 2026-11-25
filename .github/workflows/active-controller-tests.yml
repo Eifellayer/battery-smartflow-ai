@@ -1,0 +1,59 @@
+name: Active controller regression
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest voluptuous
+      - name: Prüfe Einrichtung, Mengenbegrenzung und Gerätebefehle
+        run: >-
+          python -m pytest -q
+          tests/test_native_beta2.py
+          tests/test_native_device_setup.py
+          tests/test_dev1_5_cell_voltage_and_house_load.py
+          tests/test_native_power_controller.py
+          tests/test_native_source_fusion.py
+          tests/test_zendure_hems_activity.py
+          tests/test_group_feedback.py
+          tests/test_economic_schedule.py
+          tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+          tests/test_native_read_source.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
+      - name: Vergleiche Fehler mit dem Basiscommit
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" 6c59d9f9e68321fd6a96560cdca557d2c0f31165
+          (cd "$RUNNER_TEMP/base" && python -m pytest -q --tb=no > "$RUNNER_TEMP/base-pytest.txt") || test $? -eq 1
+          python -m pytest -q --tb=no > "$RUNNER_TEMP/pr-pytest.txt" || test $? -eq 1
+          tail -n 1 "$RUNNER_TEMP/base-pytest.txt"
+          tail -n 1 "$RUNNER_TEMP/pr-pytest.txt"
+          awk '/^(FAILED|SUBFAILED)/ { for (i=1; i<=NF; i++) if ($i ~ /^tests\//) print $i }' "$RUNNER_TEMP/base-pytest.txt" | sort -u > "$RUNNER_TEMP/base-failures.txt"
+          awk '/^(FAILED|SUBFAILED)/ { for (i=1; i<=NF; i++) if ($i ~ /^tests\//) print $i }' "$RUNNER_TEMP/pr-pytest.txt" | sort -u > "$RUNNER_TEMP/pr-failures.txt"
+          comm -13 "$RUNNER_TEMP/base-failures.txt" "$RUNNER_TEMP/pr-failures.txt" > "$RUNNER_TEMP/new-failures.txt"
+          cat "$RUNNER_TEMP/new-failures.txt"
+          python - "$RUNNER_TEMP/base-pytest.txt" "$RUNNER_TEMP/pr-pytest.txt" <<'PY'
+          import collections
+          import pathlib
+          import re
+          import sys
+
+          def failed_checks(filename):
+              return collections.Counter(re.findall(
+                  r"^(?:SUB)?FAILED(?:\([^\n]*?\))? (tests/\S+)",
+                  pathlib.Path(filename).read_text(), flags=re.MULTILINE,
+              ))
+
+          base, branch = map(failed_checks, sys.argv[1:])
+          print("Additional failures within existing failing tests:", branch - base)
+          PY
+          test ! -s "$RUNNER_TEMP/new-failures.txt"

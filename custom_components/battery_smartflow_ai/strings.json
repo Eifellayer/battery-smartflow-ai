@@ -184,6 +184,16 @@
           "native_zendure_zensdk_ip": "Optional private IPv4 address for this Zendure system. Reserve it in your router. When set, ZenSDK requests use only this address and bypass mDNS for this device."
         }
       },
+      "native_controller": {
+        "title": "Choose the active Zendure controller",
+        "description": "Select the configured system BSFAI should control for single-device operation. When group regulation is enabled, its configured group members can be controlled together.",
+        "data": {
+          "native_zendure_active_device": "Active control system"
+        },
+        "data_description": {
+          "native_zendure_active_device": "This is the system BSFAI will command outside group regulation. In group mode, the active group's configured members are controlled together. The communication path saved for this system is used."
+        }
+      },
       "native_external": {
         "title": "Set up Battery SmartFlow AI",
         "description": "Select external measurements and price sources. Hardware data and pack capacities are detected automatically.",
@@ -295,6 +305,8 @@
       "topology_record_missing": "The selected topology item no longer exists."
     },
     "error": {
+      "group_pv_aggregate_one_sensor": "Select one power sensor for an aggregate source. Use component measurements for multiple sensors.",
+      "group_pv_source_conflict": "The name, sensor, or forecast is already assigned to PV source {conflicting_source}.",
       "invalid_zensdk_ip": "Enter a private IPv4 address for the Zendure device.",
       "zensdk_ip_unsupported": "This Zendure model does not support direct ZenSDK readings.",
       "zensdk_ip_clear_conflict": "Enter an address or select automatic discovery, not both.",
@@ -306,6 +318,8 @@
         "title": "Battery SmartFlow AI settings",
         "description": "Select the settings area you want to edit. Device-specific control values are managed automatically by the selected device profile.",
         "menu_options": {
+          "systems_groups": "Systems & groups",
+          "native_zendure": "Native Zendure",
           "general": "General",
           "expert": "Expert mode",
           "dashboard": "HEMS dashboard",
@@ -1146,6 +1160,9 @@
       "decision_reason": {
         "name": "Decision reason",
         "state": {
+          "economic_planning_charge": "Grid charging for later high-price household demand",
+          "economic_price_discharge": "Battery covers household demand according to the cost plan",
+          "economic_schedule_hold": "The cost plan currently calls for no charging or discharging",
           "standby": "Ready",
           "state_idle": "No demand detected",
           "state_enter_discharge": "Discharging started (demand detected)",

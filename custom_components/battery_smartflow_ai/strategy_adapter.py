@@ -16,6 +16,7 @@ PRICE_CHARGE_REASONS = {
 }
 
 PLANNED_CHARGE_REASONS = {
+    "economic_planning_charge",
     "planning_latest_start",
     "planning_forecast_poor",
     "planning_forecast_mixed",
@@ -425,7 +426,7 @@ def decision_to_strategy_decision(decision: DecisionResult) -> StrategyDecision:
             metadata=metadata,
         )
 
-    if reason == "price_based_discharge":
+    if reason in {"price_based_discharge", "economic_price_discharge"}:
         return StrategyDecision(
             state=StrategicState.ECONOMIC_DISCHARGE,
             visible_state=VisibleState.ECONOMIC_DISCHARGE,
@@ -589,7 +590,7 @@ def strategy_decision_to_intent(
         source_reason = str(strategy.source_reason or "")
         intent = (
             "arbitrage_discharge"
-            if source_reason == "price_based_discharge"
+            if source_reason in {"price_based_discharge", "economic_price_discharge"}
             else "peak_discharge"
         )
     else:

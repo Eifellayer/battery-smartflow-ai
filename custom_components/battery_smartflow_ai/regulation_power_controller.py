@@ -12,6 +12,7 @@ from .regulation_models import (
     StrategyIntent,
 )
 from .price_math import comparison_tolerance
+from .group_feedback import GroupFeedback, feedback_target
 
 
 DEFAULT_TARGET_IMPORT_W = 10.0
@@ -91,6 +92,8 @@ class RegulationPowerConfig:
     charge_max_step_up: float = DEFAULT_CHARGE_MAX_STEP_UP
     charge_max_step_down: float = DEFAULT_CHARGE_MAX_STEP_DOWN
 
+    group_feedback_gain: float = 0.35
+    group_feedback_reference_s: float = 7.0
     max_input_w: float = 2400.0
     max_output_w: float = 2400.0
 
@@ -118,6 +121,8 @@ def build_regulation_power_config(
     """Build technical power-controller config from device profile."""
 
     return RegulationPowerConfig(
+        group_feedback_gain=_profile_float(profile, "GROUP_FEEDBACK_GAIN", 0.35),
+        group_feedback_reference_s=_profile_float(profile, "GROUP_FEEDBACK_REFERENCE_S", 7.0),
         target_import_w=_profile_float(
             profile,
             "TARGET_IMPORT_W",
@@ -268,6 +273,7 @@ class RegulationPowerController:
         max_output_w: float | None = None,
         group_max_input_w: float | None = None,
         group_max_output_w: float | None = None,
+        group_feedback: GroupFeedback | None = None,
     ) -> PowerControllerResult:
         effective_max_input_w = self._effective_runtime_limit(
             profile_limit_w=self.config.max_input_w,
@@ -337,6 +343,17 @@ class RegulationPowerController:
                 max_input_w=effective_max_input_w,
             )
 
+        if group_feedback is not None and (
+            (arbiter.resolved_mode == "output" and intent.intent in {
+                "cover_deficit", "peak_discharge", "arbitrage_discharge", "manual_discharge",
+            }) or (arbiter.resolved_mode == "input" and intent.intent == "pv_charge")
+        ):
+            return self._calculate_group_feedback(
+                intent=intent, arbiter=arbiter, grid=grid, feedback=group_feedback,
+                previous_w=previous_output_w if arbiter.resolved_mode == "output" else previous_input_w,
+                maximum_w=effective_max_output_w if arbiter.resolved_mode == "output" else effective_max_input_w,
+            )
+
         if arbiter.resolved_mode == "output":
             return self._calculate_output(
                 intent=intent,
@@ -356,6 +373,49 @@ class RegulationPowerController:
             )
 
         return self._idle_result(intent=intent, arbiter=arbiter)
+
+    def _calculate_group_feedback(
+        self, *, intent, arbiter, grid, feedback, previous_w, maximum_w,
+    ) -> PowerControllerResult:
+        output = arbiter.resolved_mode == "output"
+        direction = "output" if output else "input"
+        target, economic = self._effective_target_import_w(
+            intent=intent, direction=direction,
+            base_target_import_w=self.config.discharge_target_import_w if output else self.config.target_import_w,
+        )
+        band = self._effective_deadband_w(
+            base_deadband_w=self.config.discharge_deadband_w if output else self.config.charge_deadband_w,
+            economic_target_metadata=economic,
+        )
+        measured = feedback.output_w if output else feedback.input_w
+        grid_w = float(grid.grid_now_w)
+        error = grid_w - target if output else target - grid_w
+        raw, why = feedback_target(
+            previous_w=previous_w, measured_w=measured, error_w=error,
+            elapsed_s=feedback.elapsed_s, deadband_w=band,
+            gain=self.config.group_feedback_gain,
+            reference_s=self.config.group_feedback_reference_s,
+            max_step_up_w=self.config.discharge_max_step_up if output else self.config.charge_max_step_up,
+        )
+        requested = float(intent.requested_power_w or 0.0)
+        if output and requested > 0.0:
+            raw = min(raw, requested + 80.0)
+        # PV-only charging cannot exceed present physical surplus.
+        if not output:
+            raw = min(raw, max(0.0, measured + error))
+        final = min(max(0.0, raw), max(0.0, maximum_w))
+        return PowerControllerResult(
+            raw_target_w=round(raw, 2), limited_target_w=round(final, 2),
+            applied_step_w=round(final - previous_w, 2), final_power_w=round(final, 2),
+            profile_limited=final < raw, step_limited=False,
+            reason="group_feedback_" + why,
+            metadata={
+                **economic, "group_feedback_active": True, "measured_ac_w": measured,
+                "feedback_elapsed_s": feedback.elapsed_s, "error_w": error if output else -error,
+                "target_import_w": target, "effective_deadband_w": band,
+                "control_grid_w": grid_w,
+            },
+        )
 
     @staticmethod
     def _effective_runtime_limit(
@@ -666,6 +726,9 @@ class RegulationPowerController:
                 }
             )
             return export_target_w, metadata
+
+        if intent.reason == "economic_price_discharge":
+            return max(0.0, base_target_w), metadata
 
         # Active regulated discharge:
         # Export bias is only justified when the stored energy is clearly cheaper

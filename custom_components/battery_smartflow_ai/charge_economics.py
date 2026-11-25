@@ -122,6 +122,7 @@ def classify_charge_pricing(
     pv_price = max(0.0, float(feed_in_tariff or 0.0))
 
     price_driven_charge_reasons = {
+        "economic_planning_charge",
         "very_cheap_force_charge",
         "valley_boost_charge",
         "valley_boost_charge_mixed_forecast",

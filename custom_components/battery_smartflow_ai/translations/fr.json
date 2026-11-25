@@ -958,6 +958,9 @@
       "decision_reason": {
         "name": "Raison de décision",
         "state": {
+          "economic_planning_charge": "Charge réseau pour une consommation ultérieure à prix élevé",
+          "economic_price_discharge": "La batterie alimente le logement selon le plan de coûts",
+          "economic_schedule_hold": "Le plan de coûts ne prévoit ni charge ni décharge pour le moment",
           "standby": "Prêt",
           "state_idle": "Aucun besoin détecté",
           "state_enter_discharge": "Décharge démarrée (besoin détecté)",

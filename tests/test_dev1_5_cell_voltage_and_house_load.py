@@ -57,16 +57,23 @@ from custom_components.battery_smartflow_ai.const import (
     CONF_CELL_VOLTAGE_PROTECTION_ENABLED,
     CONF_ELECTRICAL_TOPOLOGY,
     CONF_EXPERT_MODE_ENABLED,
+    SETTING_MAX_CHARGE,
+    SETTING_MAX_DISCHARGE,
 )
 from custom_components.battery_smartflow_ai.core.models import (
     CommandExecutionResult,
     CommandExecutionStatus,
     DeviceCommand,
+    MarketPricePoint,
 )
 from custom_components.battery_smartflow_ai.coordinator import (
     ZendureSmartFlowCoordinator,
+    _charge_price_opportunities,
+    _discharge_price_plan,
+    _group_power_display,
     _native_battery_power_totals,
 )
+from custom_components.battery_smartflow_ai.group_feedback import GroupFeedback
 
 # The coordinator only needs the Store adapter as a type here. Let the store
 # contract tests install their own controllable FakeHAStore implementation.
@@ -76,6 +83,88 @@ from custom_components.battery_smartflow_ai.core.models.states import (
     MeasuredValue,
     ValueValidity,
 )
+
+
+def test_discharge_price_plan_lists_all_suitable_future_intervals():
+    now = datetime(2026, 11, 24, 22, tzinfo=timezone.utc)
+
+    def point(minutes, price):
+        start = now + timedelta(minutes=minutes)
+        return MarketPricePoint(start, start + timedelta(minutes=15), price)
+
+    intervals = [point(60, 0.60), point(-5, 0.60), point(15, 0.46),
+                 point(30, 0.55), point(75, 0.49), point(90, 0.53)]
+    result = _discharge_price_plan(intervals, now, 0.52, 0.49)
+    assert {key: result[key] for key in ("status", "start", "end", "price")} == {
+        "status": "price_opportunity",
+        "start": point(30, 0.55).start.isoformat(),
+        "end": point(30, 0.55).end.isoformat(),
+        "price": 0.55,
+    }
+    assert [window["price"] for window in result["windows"]] == [0.55, 0.60, 0.53]
+    assert _discharge_price_plan(intervals, now, 0.65) == {
+        "status": "no_matching_price",
+    }
+    assert _discharge_price_plan(intervals[1:2], now, 0.49) == {
+        "status": "no_price_forecast",
+    }
+
+
+def test_charge_price_opportunities_use_future_tou_and_include_the_threshold():
+    now = datetime(2026, 11, 25, 12, tzinfo=timezone.utc)
+    prices = {-15: 0.01, 0: 0.10, 15: 0.42, 30: 0.45, 45: 0.52, 1440: 0.20}
+    points = [
+        MarketPricePoint(now + timedelta(minutes=offset), now + timedelta(minutes=offset + 15), price)
+        for offset, price in prices.items()
+    ]
+    assert [p["price"] for p in _charge_price_opportunities(points, now, 0.25, 0.45)] == [0.42, 0.45]
+    assert _charge_price_opportunities(points, now, None, float("nan")) == []
+
+
+def test_group_discharge_display_uses_fresh_pack_data_when_idle_controller_is_missing():
+    now = datetime(2026, 11, 25, 7, 50, tzinfo=timezone.utc)
+    empty = MeasuredValue.absent(ValueValidity.MISSING)
+    pack = SimpleNamespace(discharge_power_w=MeasuredValue.available(484, observed_at=now))
+    member = SimpleNamespace(ac_output_power_w=empty, discharge_power_w=empty, packs=[pack])
+    targets = {"hyper": {"direction": "idle", "power_w": 0},
+               "sf800": {"direction": "discharge", "power_w": -498}}
+
+    assert _group_power_display(now, targets, {"sf800": member}, None, direction="discharge") == {
+        "group_discharge_requested": True, "observed_group_battery_discharge_w": 484,
+    }
+    assert _group_power_display(now, targets, {"sf800": member}, GroupFeedback(0, 465, 5), direction="discharge") == {
+        "group_discharge_requested": True, "observed_group_output_w": 465,
+    }
+    member.ac_output_power_w = MeasuredValue.available(463, observed_at=now)
+    assert _group_power_display(now, targets, {"sf800": member}, None, direction="discharge") == {
+        "group_discharge_requested": True, "observed_member_output_w": 463,
+    }
+    assert _group_power_display(now + timedelta(seconds=31), targets, {"sf800": member}, None, direction="discharge") == {
+        "group_discharge_requested": True,
+    }
+    assert _group_power_display(now, {"hyper": targets["hyper"]}, {"sf800": member}, None, direction="discharge") == {}
+
+
+def test_group_charge_display_distinguishes_measured_ac_and_pack_charge():
+    now = datetime(2026, 11, 25, 7, 50, tzinfo=timezone.utc)
+    empty = MeasuredValue.absent(ValueValidity.MISSING)
+    pack = SimpleNamespace(charge_power_w=MeasuredValue.available(640, observed_at=now))
+    states = {"sf800": SimpleNamespace(ac_input_power_w=empty, charge_power_w=empty, packs=[pack])}
+    targets = {"hyper": {"direction": "idle", "power_w": 0},
+               "sf800": {"direction": "charge", "power_w": 700}}
+    requested = {"group_charge_requested": True}
+
+    def show(feedback=None, *, age=0):
+        return _group_power_display(
+            now + timedelta(seconds=age), targets, states, feedback, direction="charge",
+        )
+
+    assert show(GroupFeedback(734, 0, 5)) == {**requested, "observed_group_input_w": 734}
+    assert show() == {**requested, "observed_group_battery_charge_w": 640}
+    states["sf800"].ac_input_power_w = MeasuredValue.available(710, observed_at=now)
+    assert show() == {**requested, "observed_member_input_w": 710}
+    assert show(age=31) == requested
+    assert _group_power_display(now, targets, states, None, direction="discharge") == {}
 
 
 def _device_state(charge: float | None, discharge: float | None):
@@ -117,6 +206,10 @@ def test_native_battery_power_totals_require_complete_system_readings() -> None:
 
 def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
     async def run():
+        from custom_components.battery_smartflow_ai.core.models.market import (
+            MarketPrice, MarketPriceDirection, MarketPriceForecast, MarketPricePoint, MarketPriceValidity,
+        )
+
         now = datetime(2026, 11, 24, tzinfo=timezone.utc)
         devices = {"Hyper 2000": 1200, "SolarFlow 800 Plus": 800}
         states = {}
@@ -161,12 +254,189 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
             ],
         )
 
+        options = coordinator.entry.options
+        circuit = options[CONF_ELECTRICAL_TOPOLOGY]["circuits"]["shared"]
+        circuit["max_power_w"] = 2000
+        runtime = coordinator.native_zendure
+        demand = DeviceCommand("output", output_limit_w=2500)
+        for controller, hardware_limit in devices.items():
+            runtime.selected_device_id = controller
+            for configured_limit in (None, 0, 700, 1300, 2000):
+                if configured_limit is not None:
+                    options[SETTING_MAX_DISCHARGE] = configured_limit
+                expected = 700 if configured_limit is None else configured_limit
+                assert coordinator._native_group_power_limit_w(
+                    runtime, setting=SETTING_MAX_DISCHARGE,
+                    selected_hardware_limit_w=hardware_limit,
+                    reserve_soc_pct=20, maximum_soc_pct=95,
+                ) == expected
+                _, group_targets = coordinator._productive_group_targets(demand, runtime)
+                assert sum(cmd.output_limit_w for cmd in group_targets.values()) == expected
+                preview = coordinator._shadow_group_allocation(
+                    strategy_intent=SimpleNamespace(requested_mode="output"),
+                    charge_power_w=0, discharge_power_w=2500, soc_min=20, soc_max=95,
+                )
+                assert preview["group_max_discharge_w"] == expected
+                assert preview["proposed_power_w"] == expected
+            options.pop(SETTING_MAX_DISCHARGE)
+
+        runtime.selected_device_id = "Hyper 2000"
+        options[SETTING_MAX_DISCHARGE] = 2000
+        status, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure
+        )
+        assert status == "group_control_active"
+        assert {device: cmd.output_limit_w for device, cmd in targets.items()} == devices
+
+        intent = SimpleNamespace(metadata={"group_selected_max_output_w": 500})
+        _, tapered = coordinator._productive_group_targets(
+            demand, runtime, strategy_intent=intent
+        )
+        assert {device: cmd.output_limit_w for device, cmd in tapered.items()} == {
+            "Hyper 2000": 500, "SolarFlow 800 Plus": 800,
+        }
+        options[SETTING_MAX_CHARGE] = 600
+        _, charge_targets = coordinator._productive_group_targets(
+            DeviceCommand("input", input_limit_w=1800), runtime
+        )
+        assert sum(cmd.input_limit_w for cmd in charge_targets.values()) == 600
+        split_intent = SimpleNamespace(metadata={
+            "group_economic_direction": "input",
+            "group_economic_member_limits_w": {"SolarFlow 800 Plus": 350},
+        })
+        status, split_targets = coordinator._productive_group_targets(
+            DeviceCommand("input", input_limit_w=1800), runtime, strategy_intent=split_intent,
+        )
+        assert status == "group_control_active"
+        assert split_targets["Hyper 2000"].input_limit_w == 0
+        assert split_targets["SolarFlow 800 Plus"].input_limit_w == 350
+        options.pop(SETTING_MAX_CHARGE)
+
+        snapshots = runtime.shadow_allocation_snapshots
+        runtime.shadow_allocation_snapshots = lambda **kwargs: [
+            {**item, "soc_pct": 20} for item in snapshots(**kwargs)
+        ]
+
+        async def executor(job):
+            return job()
+
+        coordinator.hass = SimpleNamespace(async_add_executor_job=executor)
+
+        async def get_plan(season, price, peak, forecast=None):
+            points = tuple(MarketPricePoint(
+                now + timedelta(hours=i), now + timedelta(hours=i + 1), price if i == 0 else peak,
+            ) for i in range(7))
+            market = MarketPrice(
+                MarketPriceDirection.IMPORT, price, "EUR", "€/kWh", now, "test",
+                MarketPriceValidity.VALID, True, False, MarketPriceForecast(points),
+            )
+            return await coordinator._economic_group_plan(
+                SimpleNamespace(
+                    now=now, ai_mode="automatic", season=season, soc_min=20, soc_max=95,
+                    grid_sensor_valid=True, pv_sensor_valid=True, soc_limits_valid=True,
+                    power_limits_valid=True, forecast=forecast, import_market_price=market,
+                    export_market_price=None, profit_margin_pct=27,
+                ), runtime,
+                current_ac_input_w=1200, load_model=None, learned_ready=False,
+                forecast_base_load_w=400, selected_capacity_kwh=2, current_net_load_w=300,
+                grid_charge_policy={"Hyper 2000": (27, 0.79, 0), "SolarFlow 800 Plus": (20, 0.87, 10)},
+            )
+
+        summary, charge_w = await get_plan("winter", 0.40, 0.48)
+        assert summary["status"] == "active_partial_forecast"
+        assert summary["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
+        assert summary["_member_limits_w"]["Hyper 2000"] == 0
+        assert 0 < charge_w <= 800
+
+        weak_solar = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 1, 100),))
+        summer, charge_w = await get_plan("summer", 0.20, 0.40, weak_solar)
+        assert summer["status"] == "active_partial_forecast"
+        assert summer["summer_grid_charge"][0]["extra_buffer_pct"] == 10
+        assert summer["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
+        assert 0 < charge_w <= 800
+
+        sunny_forecast = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 3, 8000),))
+        sunny, charge_w = await get_plan("summer", 0.20, 0.40, sunny_forecast)
+        assert sunny["summer_grid_charge"][0]["grid_budget_kwh"] == 0
+        assert "grid_charge_kwh" not in sunny
+        assert charge_w <= 0
+
+        unconfirmed, charge_w = await get_plan("summer", 0.20, 0.40)
+        assert unconfirmed["status"] == "load_history_missing"
+        assert charge_w is None
+        negative, charge_w = await get_plan("summer", -0.05, 0.40)
+        assert negative["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
+        assert 0 < charge_w <= 800
+        runtime.shadow_allocation_snapshots = snapshots
+
+        options[SETTING_MAX_DISCHARGE] = 1300
+        _, targets = coordinator._productive_group_targets(demand, coordinator.native_zendure)
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 1300
+        assert coordinator._native_group_power_limit_w(
+            coordinator.native_zendure, setting=SETTING_MAX_DISCHARGE,
+            selected_hardware_limit_w=1200, reserve_soc_pct=20, maximum_soc_pct=95,
+        ) == 1300
+
+        # The economic request must not undo the technical deadband/ramp.
+        intent = SimpleNamespace(requested_mode="output", requested_power_w=550, metadata={})
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=190), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 190
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=0), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 0
+
+        # A pending 200 W correction may not accumulate additional output
+        # from repeated observations of the same residual import.
+        coordinator._persist["group_control_last_targets"] = {
+            "Hyper 2000": {"power_w": -200.0},
+            "SolarFlow 800 Plus": {"power_w": 0.0},
+        }
+        coordinator._persist["group_control_target_changed_at"] = now.isoformat()
+        intent.intent = "arbitrage_discharge"
+        demand = DeviceCommand("output", output_limit_w=500,
+                               metadata={"last_output_limit_w": 200})
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 200
+        assert targets["SolarFlow 800 Plus"].metadata["last_output_limit_w"] == 0
+        assert targets["Hyper 2000"].metadata["last_output_limit_w"] == 200
+        now += timedelta(seconds=13)
+        coordinator._get_grid = lambda: (60.0, 0.0)
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 250
+        coordinator._get_grid = lambda: (0.0, 150.0)
+        _, targets = coordinator._productive_group_targets(
+            demand, coordinator.native_zendure, strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 200
+        _, targets = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=80), coordinator.native_zendure,
+            strategy_intent=intent,
+        )
+        assert sum(cmd.output_limit_w for cmd in targets.values()) == 80
+        coordinator._persist.pop("group_control_last_targets")
+        coordinator._persist.pop("group_control_target_changed_at")
+        coordinator._get_grid = lambda: (600.0, 0.0)
+
+        options[SETTING_MAX_DISCHARGE] = 2000
+        circuit["max_power_w"] = 1400
         started = await coordinator._execute_device_command(
             DeviceCommand("output", output_limit_w=1700)
         )
         assert started.reason == "group_control_active"
         assert {device for device, _ in writes} == set(devices)
         assert sum(command.output_limit_w for _, command in writes) == 1400
+        assert coordinator._persist["last_set_output_w"] == 1400
+        assert all(item["accepted_at"] == now.isoformat()
+                   for item in coordinator._persist["group_control_last_targets"].values())
         assert all(0 < command.output_limit_w <= devices[device] for device, command in writes)
 
         writes.clear()
@@ -175,6 +445,15 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert waiting.reason == "group_control_handover_waiting_for_zero"
         assert {device for device, _ in writes} == set(devices)
         assert all(command.input_limit_w == command.output_limit_w == 0 for _, command in writes)
+
+        preview = coordinator._shadow_group_allocation(
+            strategy_intent=SimpleNamespace(requested_mode="input"),
+            charge_power_w=1400, discharge_power_w=0, soc_min=20, soc_max=95,
+        )
+        public_ids = {item["device_id"] for item in preview["devices"]}
+        assert preview["dispatch_status"] == "group_control_handover_waiting_for_zero"
+        assert set(preview["handover_pending"]["devices"]) == public_ids
+        assert public_ids.isdisjoint(devices)
 
         now += timedelta(seconds=2)
         states.update({device: SimpleNamespace(
@@ -189,6 +468,13 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert {device for device, _ in writes} == set(devices)
         assert sum(command.input_limit_w for _, command in writes) == 1400
         assert all(0 < command.input_limit_w <= devices[device] for device, command in writes)
+
+        preview = coordinator._shadow_group_allocation(
+            strategy_intent=SimpleNamespace(requested_mode="input"),
+            charge_power_w=1400, discharge_power_w=0, soc_min=20, soc_max=95,
+        )
+        assert set(preview["last_accepted_targets"]) == public_ids
+        assert preview["handover_pending"] is None
 
     asyncio.run(run())
 
