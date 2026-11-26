@@ -612,5 +612,16 @@
   "topology_record_in_use": "Der Eintrag wird noch von einem Geräteausgang oder Stromkreis verwendet.",
   "topology_record_missing": "Der ausgewählte Topologie-Eintrag ist nicht mehr vorhanden.",
   "options_loading": "Gruppeneinrichtung wird geladen …",
-  "options_open_failed": "Der Dialog konnte nicht geöffnet werden. Technische Meldung:"
+  "options_open_failed": "Der Dialog konnte nicht geöffnet werden. Technische Meldung:",
+  "member_charge_title": "Netzladen je Gerät",
+  "member_charge_measured": "AC-Eingang gemessen",
+  "member_charge_no_measurement": "keine aktuelle Messung",
+  "member_charge_plan_changed": "Plan geändert um",
+  "member_charge_not_planned": "nicht eingeplant",
+  "member_charge_planned_later": "später eingeplant",
+  "member_charge_charge_requested": "Laden angefordert, noch nicht gemessen",
+  "member_charge_charging_confirmed": "lädt (gemessen)",
+  "member_charge_stop_requested": "Stopp angefordert, lädt noch",
+  "member_charge_stopped_confirmed": "pausiert bis zum nächsten Fenster",
+  "member_charge_finished": "Netzladen beendet"
 }
