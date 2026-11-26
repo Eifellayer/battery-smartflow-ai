@@ -451,6 +451,7 @@
   },
   "selector": {
     "balancing_policy": {"options": {"energy_weighted": "Energiegewogen", "soc_delta": "Op basis van SoC-verschil"}},
+    "preferred_lead": {"options": {"auto": "Automatisch (op laadtoestand)"}},
     "group_objective": {"options": {"near_zero": "Eigen verbruik / bijna 0 W", "peak_shaving": "Piekbelasting beperken", "pv_storage": "PV-overschot opslaan", "ups_price_arbitrage": "UPS-prijsarbitrage"}},
     "zendure_transport": {"options": {"cloud_mqtt": "Cloud (aanbevolen voor Legacy)", "local_mqtt": "Lokale MQTT (geavanceerd)", "zensdk": "ZenSDK (aanbevolen)"}},
     "grid_mode": {

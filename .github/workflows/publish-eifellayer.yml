@@ -1,0 +1,72 @@
+name: Test and publish eifellayer release
+
+# One workflow for every release: pushing a branch named like the version
+# (e.g. 6.0.10-eifellayer.23) tests it and publishes a GitHub release, so the
+# Home Assistant Marketplace offers it as an update.
+on:
+  push:
+    branches: ['6.0.10-eifellayer.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Branch name must match the integration version
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('custom_components/battery_smartflow_ai/manifest.json'))['version'])")
+          const=$(python3 -c "import re; print(re.search(r'INTEGRATION_VERSION = \"([^\"]+)\"', open('custom_components/battery_smartflow_ai/const.py').read()).group(1))")
+          echo "branch=${GITHUB_REF_NAME} manifest=${version} const=${const}"
+          test "${version}" = "${GITHUB_REF_NAME}"
+          test "${const}" = "${GITHUB_REF_NAME}"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest voluptuous
+      - run: >-
+          python -m pytest -q
+          tests/test_group_feedback.py
+          tests/test_dev1_5_cell_voltage_and_house_load.py
+          tests/test_group_preferred_lead.py
+          tests/test_group_charge_diagnostics.py
+          tests/test_technical_regulation_core.py
+          tests/test_native_power_controller.py
+          tests/test_native_beta2.py
+          tests/test_native_source_fusion.py
+          tests/test_group_wizard.py
+          tests/test_zendure_normalizer.py
+          tests/test_command_execution_state.py
+      - run: node --check custom_components/battery_smartflow_ai/frontend/hems-dashboard.js
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Create the release once (later pushes never overwrite it)
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"; exit 0
+          fi
+          git log -1 --format=%b | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
+          gh release create "$tag" --target "${GITHUB_SHA}" --latest \
+            --title "Battery SmartFlow AI $tag" \
+            --notes-file notes.md

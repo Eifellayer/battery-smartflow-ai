@@ -403,6 +403,7 @@
           "control_enabled": "Gestufte Gruppenregelung aktivieren",
           "balancing_policy": "Verteilung der Leistung",
           "soc_delta_pct": "SoC-Abstand zum Wechsel (%)",
+          "preferred_lead": "Bevorzugtes Gerät (führt immer, solange es kann)",
           "peak_import_limit_w": "Maximaler Netzbezug (W)",
           "ups_charge_target_soc_pct": "USV-Ladeziel (%)",
           "ups_reserve_soc_pct": "USV-Reserve (%)"
@@ -640,6 +641,7 @@
       }
     },
     "balancing_policy": {"options": {"energy_weighted": "Energiegewichtet", "soc_delta": "Nach SoC-Abstand"}},
+    "preferred_lead": {"options": {"auto": "Automatisch (nach Ladestand)"}},
     "group_objective": {"options": {"near_zero": "Eigenverbrauch / nahe 0 W", "peak_shaving": "Lastspitzen kappen", "pv_storage": "PV-Überschuss speichern", "ups_price_arbitrage": "USV-Preis-Arbitrage"}}
   },
   "entity": {

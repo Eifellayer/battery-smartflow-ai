@@ -976,6 +976,10 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "peak_import_limit_w", 3000
         )
         result_data["lead_device_id"] = public_ids.get(result.lead_device_id)
+        configured_lead = selected_group.get("preferred_lead")
+        result_data["preferred_lead_device_id"] = (
+            public_ids.get(configured_lead) if configured_lead else None
+        )
         for item in result_data["devices"]:
             item["device_id"] = public_ids.get(item["device_id"])
         missing_members = set(members).difference(snapshot_by_id)
@@ -1024,8 +1028,15 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         natural_allocation: Any,
         snapshots_by_id: Mapping[str, Mapping[str, Any]],
         soc_delta_pct: float = GROUP_LEAD_SOC_HYSTERESIS_PCT,
+        preferred_lead: str | None = None,
     ) -> str | None:
-        """Keep the current lead until a meaningful, sustained advantage appears."""
+        """Keep the current lead until a meaningful, sustained advantage appears.
+
+        A preferred lead configured for the group always leads while it can
+        deliver power in the requested direction. When it cannot (reserve,
+        full, protection or an economic limit of 0 W), the normal SoC-based
+        selection applies until it becomes eligible again.
+        """
 
         natural_lead = natural_allocation.lead_device_id
         if abs(target_w) <= 0.5 or not natural_lead:
@@ -1059,7 +1070,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             <= GROUP_LEAD_IDLE_RESET_SECONDS
         )
         selected_lead = natural_lead
-        if retain_current and current_lead != natural_lead:
+        if preferred_lead and preferred_lead in eligible_ids:
+            selected_lead = preferred_lead
+        elif retain_current and current_lead != natural_lead:
             current_soc = _to_float(
                 snapshots_by_id.get(current_lead, {}).get("soc_pct")
             )
@@ -1856,6 +1869,7 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             natural_allocation=natural_allocation,
             snapshots_by_id=snapshot_by_id,
             soc_delta_pct=soc_delta_pct,
+            preferred_lead=selected_group.get("preferred_lead"),
         )
         allocation = allocate_staged_efficiency(
             target_w,

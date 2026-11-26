@@ -451,6 +451,7 @@
   },
   "selector": {
     "balancing_policy": {"options": {"energy_weighted": "Pondération énergétique", "soc_delta": "Selon l’écart de SoC"}},
+    "preferred_lead": {"options": {"auto": "Automatique (selon l’état de charge)"}},
     "group_objective": {"options": {"near_zero": "Autoconsommation / proche de 0 W", "peak_shaving": "Réduction des pointes", "pv_storage": "Stocker le surplus PV", "ups_price_arbitrage": "Arbitrage tarifaire UPS"}},
     "zendure_transport": {"options": {"cloud_mqtt": "Cloud (recommandé pour Legacy)", "local_mqtt": "MQTT local (avancé)", "zensdk": "ZenSDK (recommandé)"}},
     "grid_mode": {

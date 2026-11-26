@@ -17,6 +17,7 @@ from .battery_groups import (
     DEFAULT_UPS_RESERVE_SOC_PCT,
     GROUP_OBJECTIVES,
     GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE,
+    PREFERRED_LEAD_AUTO,
     migrate_single_device_group,
     remove_group,
     save_group,
@@ -2255,6 +2256,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 peak_import_limit_w=draft.get("peak_import_limit_w"),
                 ups_charge_target_soc_pct=draft.get("ups_charge_target_soc_pct"),
                 ups_reserve_soc_pct=draft.get("ups_reserve_soc_pct"),
+                preferred_lead=draft.get("preferred_lead") or PREFERRED_LEAD_AUTO,
                 move_members=True,
             )
             scopes = save_energy_scope(
@@ -2636,6 +2638,21 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
             for device_id, label in sorted(choices.items(), key=lambda item: item[1].casefold())
         ]
 
+    def _preferred_lead_choices(self):
+        """Offer "automatic" plus every member chosen for this group."""
+
+        members = set(self._group_wizard_draft.get("members") or ())
+        return [{"value": PREFERRED_LEAD_AUTO, "label": "Automatisch"}] + [
+            item
+            for item in self._group_device_choices(include_members=tuple(members))
+            if item["value"] in members
+        ]
+
+    def _preferred_lead_default(self):
+        current = self._group_wizard_draft.get("preferred_lead")
+        members = set(self._group_wizard_draft.get("members") or ())
+        return current if current in members else PREFERRED_LEAD_AUTO
+
     def _group_choices(self):
         groups = self._group_config()["groups"]
         return [
@@ -2695,6 +2712,13 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional("soc_delta_pct", default=self._group_wizard_draft.get("soc_delta_pct", 10)): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=1, max=50, step=1, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Optional("preferred_lead", default=self._preferred_lead_default()): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=self._preferred_lead_choices(),
+                            translation_key="preferred_lead",
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
                     ),
                     vol.Optional("objective", default=self._group_wizard_draft.get("objective", DEFAULT_GROUP_OBJECTIVE)): selector.SelectSelector(
                         selector.SelectSelectorConfig(options=sorted(GROUP_OBJECTIVES), translation_key="group_objective", mode=selector.SelectSelectorMode.DROPDOWN)

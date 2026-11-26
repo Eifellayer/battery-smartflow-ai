@@ -645,6 +645,7 @@
       }
     },
     "balancing_policy": {"options": {"energy_weighted": "Energy weighted", "soc_delta": "By SoC difference"}},
+    "preferred_lead": {"options": {"auto": "Automatic (by state of charge)"}},
     "group_objective": {"options": {"near_zero": "Self-consumption / near zero", "peak_shaving": "Peak shaving", "pv_storage": "Store PV surplus", "ups_price_arbitrage": "UPS price arbitrage"}}
   },
   "entity": {

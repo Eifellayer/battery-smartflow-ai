@@ -13,6 +13,7 @@ from typing import Any
 GROUPS_SCHEMA_VERSION = 1
 BALANCING_POLICY_ENERGY_WEIGHTED = "energy_weighted"
 BALANCING_POLICY_SOC_DELTA = "soc_delta"
+PREFERRED_LEAD_AUTO = "auto"
 BALANCING_POLICIES = frozenset(
     {BALANCING_POLICY_ENERGY_WEIGHTED, BALANCING_POLICY_SOC_DELTA}
 )
@@ -255,9 +256,21 @@ def reconcile_group_config(value: Any = None) -> dict[str, Any]:
                 0,
                 95,
             ),
+            "preferred_lead": _normalize_preferred_lead(
+                raw_group.get("preferred_lead"), members
+            ),
         }
 
     return {"version": GROUPS_SCHEMA_VERSION, "groups": groups}
+
+
+def _normalize_preferred_lead(value: Any, members: Sequence[str]) -> str | None:
+    """Keep a preferred lead only while it is a member of the group."""
+
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if candidate and candidate in members else None
 
 
 def enabled_group_members(
@@ -337,6 +350,7 @@ def save_group(
     peak_import_limit_w: int | float | None = None,
     ups_charge_target_soc_pct: int | float | None = None,
     ups_reserve_soc_pct: int | float | None = None,
+    preferred_lead: str | None = None,
     move_members: bool = False,
 ) -> dict[str, Any]:
     """Add or update one group without changing any other membership."""
@@ -422,6 +436,13 @@ def save_group(
         "peak_import_limit_w": peak_limit,
         "ups_charge_target_soc_pct": ups_target_soc,
         "ups_reserve_soc_pct": ups_reserve_soc,
+        # "auto" (or an empty value) clears the preference; None keeps it.
+        "preferred_lead": _normalize_preferred_lead(
+            existing.get("preferred_lead")
+            if preferred_lead is None
+            else ("" if preferred_lead == PREFERRED_LEAD_AUTO else preferred_lead),
+            normalized_members,
+        ),
     }
     return result
 
