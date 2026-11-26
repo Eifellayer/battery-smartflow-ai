@@ -24,6 +24,7 @@ class GroupWizardTests(unittest.IsolatedAsyncioTestCase):
                     "DEFAULT_UPS_CHARGE_TARGET_SOC_PCT", "DEFAULT_UPS_RESERVE_SOC_PCT",
                     "GROUP_OBJECTIVES", "GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE",
                     "migrate_single_device_group", "save_group",
+                    "PREFERRED_LEAD_AUTO",
                 )
             }
         )
