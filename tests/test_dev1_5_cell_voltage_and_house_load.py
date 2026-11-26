@@ -494,11 +494,29 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         # readback arrives. The repeated stop refreshes requested_at, so only
         # the time of the first stop may end the wait.
         stale_at = now
+
+        def stale_zero():
+            return MeasuredValue(0, ValueValidity.STALE, stale_at)
+
+        # An absent reading is never a stop confirmation, however long it waits.
         states.update({device: SimpleNamespace(
-            ac_input_power_w=MeasuredValue.available(0, observed_at=stale_at),
-            ac_output_power_w=MeasuredValue.available(0, observed_at=stale_at),
-            charge_power_w=MeasuredValue.available(0, observed_at=stale_at),
-            discharge_power_w=MeasuredValue.available(0, observed_at=stale_at),
+            ac_input_power_w=MeasuredValue.absent(ValueValidity.NEVER_RECEIVED),
+            ac_output_power_w=stale_zero(),
+            charge_power_w=stale_zero(),
+            discharge_power_w=stale_zero(),
+        ) for device in devices})
+        now += timedelta(seconds=5)
+        await coordinator._execute_device_command(DeviceCommand("output", output_limit_w=1400))
+        now += timedelta(seconds=300)
+        never = await coordinator._execute_device_command(DeviceCommand("output", output_limit_w=1400))
+        assert never.reason == "group_control_handover_waiting_for_zero"
+        coordinator._persist.pop("group_control_handover_pending", None)
+
+        states.update({device: SimpleNamespace(
+            ac_input_power_w=stale_zero(),
+            ac_output_power_w=stale_zero(),
+            charge_power_w=stale_zero(),
+            discharge_power_w=stale_zero(),
         ) for device in devices})
         now += timedelta(seconds=5)
         writes.clear()

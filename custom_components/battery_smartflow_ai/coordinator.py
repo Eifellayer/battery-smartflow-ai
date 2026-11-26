@@ -4764,6 +4764,44 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 return False
                         return True
 
+                    def last_known_flow_zero(device_id: str) -> bool:
+                        """Accept a last known zero even after it aged to stale.
+
+                        Values older than the freshness window are reported as
+                        stale. A device that publishes power only on change
+                        therefore has no valid sample while it stays at 0 W.
+                        Only an online device whose last received AC values
+                        are real zeros qualifies; absent values never do.
+                        """
+                        state = device_states.get(device_id)
+                        if state is None:
+                            return False
+                        online = getattr(state, "online", None)
+                        if online is not None and online.valid and online.value is False:
+                            return False
+                        if group_objective == GROUP_OBJECTIVE_UPS_PRICE_ARBITRAGE:
+                            flows = (state.charge_power_w, state.discharge_power_w)
+                        else:
+                            flows = (state.ac_input_power_w, state.ac_output_power_w)
+                        for measured in flows:
+                            if (
+                                measured is None
+                                or measured.validity
+                                not in (ValueValidity.VALID, ValueValidity.STALE)
+                                or measured.value is None
+                            ):
+                                return False
+                            try:
+                                value = float(measured.value)
+                            except (TypeError, ValueError, OverflowError):
+                                return False
+                            if (
+                                not math.isfinite(value)
+                                or abs(value) > GROUP_HANDOVER_POWER_TOLERANCE_W
+                            ):
+                                return False
+                        return True
+
                     handover_ids: set[str] = set()
                     waiting_for_handover = False
                     if pending_handover is not None:
@@ -4823,10 +4861,9 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         )
                                 first_requested_at = dt_util.as_utc(first_requested_at)
                                 stale_zero_accepted = bool(
-                                    observed_at is not None
-                                    and observed_w <= GROUP_HANDOVER_POWER_TOLERANCE_W
-                                    and (now_utc - first_requested_at).total_seconds()
+                                    (now_utc - first_requested_at).total_seconds()
                                     >= GROUP_HANDOVER_STALE_ZERO_ACCEPT_SECONDS
+                                    and last_known_flow_zero(str(device_id))
                                 )
                                 if flow_still_active or not (
                                     flow_zero_confirmed
