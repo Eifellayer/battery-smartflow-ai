@@ -489,6 +489,47 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert set(preview["last_accepted_targets"]) == public_ids
         assert preview["handover_pending"] is None
 
+        # Cloud devices publish power only on change: the zero sample was
+        # observed before the stop and is never republished, and no setpoint
+        # readback arrives. The repeated stop refreshes requested_at, so only
+        # the time of the first stop may end the wait.
+        stale_at = now
+        states.update({device: SimpleNamespace(
+            ac_input_power_w=MeasuredValue.available(0, observed_at=stale_at),
+            ac_output_power_w=MeasuredValue.available(0, observed_at=stale_at),
+            charge_power_w=MeasuredValue.available(0, observed_at=stale_at),
+            discharge_power_w=MeasuredValue.available(0, observed_at=stale_at),
+        ) for device in devices})
+        now += timedelta(seconds=5)
+        writes.clear()
+        discharge = DeviceCommand("output", output_limit_w=1400)
+        waiting = await coordinator._execute_device_command(discharge)
+        assert waiting.reason == "group_control_handover_waiting_for_zero"
+        for _ in range(5):
+            now += timedelta(seconds=15)
+            still = await coordinator._execute_device_command(discharge)
+            assert still.reason == "group_control_handover_waiting_for_zero"
+        now += timedelta(seconds=20)
+        writes.clear()
+        resumed = await coordinator._execute_device_command(discharge)
+        assert resumed.reason == "group_control_active"
+        assert sum(command.output_limit_w for _, command in writes) == 1400
+        assert coordinator._persist.get("group_control_handover_pending") is None
+
+        # A last known active flow is never treated as a stop confirmation.
+        writes.clear()
+        states.update({device: SimpleNamespace(
+            ac_input_power_w=MeasuredValue.available(0, observed_at=now),
+            ac_output_power_w=MeasuredValue.available(700, observed_at=now),
+            charge_power_w=MeasuredValue.available(0, observed_at=now),
+            discharge_power_w=MeasuredValue.available(700, observed_at=now),
+        ) for device in devices})
+        waiting = await coordinator._execute_device_command(charge)
+        assert waiting.reason == "group_control_handover_waiting_for_zero"
+        now += timedelta(seconds=300)
+        still = await coordinator._execute_device_command(charge)
+        assert still.reason == "group_control_handover_waiting_for_zero"
+
     asyncio.run(run())
 
 

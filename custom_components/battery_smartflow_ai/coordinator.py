@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import partial
@@ -374,6 +374,10 @@ GROUP_LEAD_IDLE_RESET_SECONDS = 60.0
 GROUP_HANDOVER_POWER_TOLERANCE_W = 50.0
 GROUP_HANDOVER_FLOW_MAX_AGE_SECONDS = 30.0
 GROUP_HANDOVER_SETPOINT_MAX_AGE_SECONDS = 30.0
+# Devices on the cloud path publish power only when it changes. After a stop
+# request an unchanged zero reading may never be republished, so a last known
+# zero flow is accepted once the stop has been pending this long.
+GROUP_HANDOVER_STALE_ZERO_ACCEPT_SECONDS = 90.0
 
 
 def _to_float(v: Any, default: float | None = None) -> float | None:
@@ -4803,9 +4807,31 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     flow_observed_after_request
                                     and observed_w <= GROUP_HANDOVER_POWER_TOLERANCE_W
                                 )
+                                # requested_at is refreshed with every repeated
+                                # stop. Keep the time of the first stop so a
+                                # device that never republishes an unchanged
+                                # zero cannot hold the handover forever.
+                                now_utc = dt_util.as_utc(self._clock.utc_now())
+                                first_requested_at = dt_util.parse_datetime(
+                                    str(pending_item.get("first_requested_at") or "")
+                                )
+                                if first_requested_at is None:
+                                    first_requested_at = now_utc
+                                    if isinstance(pending_item, MutableMapping):
+                                        pending_item["first_requested_at"] = (
+                                            now_utc.isoformat()
+                                        )
+                                first_requested_at = dt_util.as_utc(first_requested_at)
+                                stale_zero_accepted = bool(
+                                    observed_at is not None
+                                    and observed_w <= GROUP_HANDOVER_POWER_TOLERANCE_W
+                                    and (now_utc - first_requested_at).total_seconds()
+                                    >= GROUP_HANDOVER_STALE_ZERO_ACCEPT_SECONDS
+                                )
                                 if flow_still_active or not (
                                     flow_zero_confirmed
                                     or zero_setpoints_confirmed(str(device_id))
+                                    or stale_zero_accepted
                                 ):
                                     waiting_for_handover = True
                         else:
@@ -4868,7 +4894,10 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     device_id: {
                                         "requested_at": dt_util.as_utc(
                                             self._clock.utc_now()
-                                        ).isoformat()
+                                        ).isoformat(),
+                                        "first_requested_at": dt_util.as_utc(
+                                            self._clock.utc_now()
+                                        ).isoformat(),
                                     }
                                     for device_id in reductions
                                 },
