@@ -321,11 +321,30 @@
           "systems_groups": "Systems & groups",
           "native_zendure": "Native Zendure",
           "general": "General",
+          "planned_loads": "Planned consumers",
           "expert": "Expert mode",
           "dashboard": "HEMS dashboard",
           "smart_mode": "Zendure Smart Mode",
           "training": "Regulation training",
           "debug": "Debug mode"
+        }
+      },
+      "planned_loads": {
+        "title": "Planned consumers",
+        "description": "Consumers whose power is known in advance are added to the forecast on top of the base load. With a remaining-time or end-time sensor (for example a 3D printer) the present power counts until the job ends. Without it (for example an aquarium or a grow box) the average power of the last day counts. Spontaneous consumers do not belong here. Lower the base load by the average power of the consumers listed here.",
+        "data": {
+          "planned_load_1_power": "Consumer 1: power",
+          "planned_load_1_end": "Consumer 1: remaining or end time (optional)",
+          "planned_load_2_power": "Consumer 2: power",
+          "planned_load_2_end": "Consumer 2: remaining or end time (optional)",
+          "planned_load_3_power": "Consumer 3: power",
+          "planned_load_3_end": "Consumer 3: remaining or end time (optional)",
+          "planned_load_4_power": "Consumer 4: power",
+          "planned_load_4_end": "Consumer 4: remaining or end time (optional)",
+          "planned_load_5_power": "Consumer 5: power",
+          "planned_load_5_end": "Consumer 5: remaining or end time (optional)",
+          "planned_load_6_power": "Consumer 6: power",
+          "planned_load_6_end": "Consumer 6: remaining or end time (optional)"
         }
       },
       "systems_groups": {

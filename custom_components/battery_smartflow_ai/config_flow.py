@@ -69,6 +69,7 @@ from .const import (
     CONF_PV_ENTITY,
     CONF_PV_FORECAST_CONFIG_ENTRIES,
     CONF_PV_FORECAST_TODAY_ENTITY,
+    CONF_PLANNED_LOADS,
     CONF_PV_FORECAST_TOMORROW_ENTITY,
     CONF_SHELLY_3EM_HOST,
     CONF_SHELLY_3EM_PASSWORD,
@@ -106,6 +107,9 @@ from .const import (
     SETTING_FULL_CHARGE_MAINTENANCE_ENABLED,
     SETTING_FULL_CHARGE_MAINTENANCE_INTERVAL_DAYS,
     SETTING_LEARNED_PLANNING_ENABLED,
+)
+from .planned_loads import (
+    MAX_PLANNED_LOADS, end_field, parse_planned_loads, planned_loads_from_form, power_field,
 )
 from .core.models import ZendureTransport
 from .device_profiles import (
@@ -1567,6 +1571,7 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 "native_zendure",
                 "systems_groups",
                 "general",
+                "planned_loads",
                 "expert",
                 "smart_mode",
                 "dashboard",
@@ -1574,6 +1579,34 @@ class ZendureSmartFlowOptionsFlow(config_entries.OptionsFlow):
                 "debug",
             ],
         )
+
+    async def async_step_planned_loads(self, user_input: dict[str, Any] | None = None):
+        """Consumers the economic plan adds on top of the base load."""
+
+        if user_input is not None:
+            options = dict(self.config_entry.options)
+            options[CONF_PLANNED_LOADS] = planned_loads_from_form(user_input)
+            return self.async_create_entry(title="", data=options)
+
+        stored = parse_planned_loads(self.config_entry.options.get(CONF_PLANNED_LOADS))
+        fields: dict[Any, Any] = {}
+        for index in range(1, MAX_PLANNED_LOADS + 1):
+            load = stored[index - 1] if index <= len(stored) else None
+            power_key = (
+                vol.Optional(power_field(index), default=load.power_entity)
+                if load is not None else vol.Optional(power_field(index))
+            )
+            end_key = (
+                vol.Optional(end_field(index), default=load.end_entity)
+                if load is not None and load.end_entity else vol.Optional(end_field(index))
+            )
+            fields[power_key] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            )
+            fields[end_key] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class=["duration", "timestamp"])
+            )
+        return self.async_show_form(step_id="planned_loads", data_schema=vol.Schema(fields))
 
     def _energy_scope_config(self):
         return normalize_energy_scope_config(

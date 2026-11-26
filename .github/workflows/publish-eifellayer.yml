@@ -38,6 +38,7 @@ jobs:
           tests/test_dev1_5_cell_voltage_and_house_load.py
           tests/test_group_preferred_lead.py
           tests/test_group_charge_diagnostics.py
+          tests/test_planned_loads_and_sharing.py
           tests/test_technical_regulation_core.py
           tests/test_native_power_controller.py
           tests/test_native_beta2.py

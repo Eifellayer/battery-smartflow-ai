@@ -301,12 +301,31 @@
         "menu_options": {
           "systems_groups": "Systeme & Gruppen",
           "general": "Anlage und Messwerte",
+          "planned_loads": "Planbare Verbraucher",
           "expert": "Expertenmodus",
           "dashboard": "HEMS-Dashboard",
           "smart_mode": "Zendure-SmartMode",
           "native_zendure": "Zendure-Geräte und Controller",
           "training": "Regelungstraining",
           "debug": "Debug-Modus"
+        }
+      },
+      "planned_loads": {
+        "title": "Planbare Verbraucher",
+        "description": "Verbraucher, deren Bedarf vorher bekannt ist, rechnet die Planung zusätzlich zur Grundlast ein. Mit einem Sensor für Restzeit oder Endzeit (zum Beispiel ein 3D-Drucker) zählt die aktuelle Leistung bis zum Ende des Auftrags. Ohne einen solchen Sensor (zum Beispiel Aquarium oder Growbox) zählt die durchschnittliche Leistung des letzten Tages. Spontane Verbraucher gehören nicht hierher. Senke die Grundlast um den Durchschnitt der hier eingetragenen Verbraucher.",
+        "data": {
+          "planned_load_1_power": "Verbraucher 1: Leistung",
+          "planned_load_1_end": "Verbraucher 1: Restzeit oder Endzeit (optional)",
+          "planned_load_2_power": "Verbraucher 2: Leistung",
+          "planned_load_2_end": "Verbraucher 2: Restzeit oder Endzeit (optional)",
+          "planned_load_3_power": "Verbraucher 3: Leistung",
+          "planned_load_3_end": "Verbraucher 3: Restzeit oder Endzeit (optional)",
+          "planned_load_4_power": "Verbraucher 4: Leistung",
+          "planned_load_4_end": "Verbraucher 4: Restzeit oder Endzeit (optional)",
+          "planned_load_5_power": "Verbraucher 5: Leistung",
+          "planned_load_5_end": "Verbraucher 5: Restzeit oder Endzeit (optional)",
+          "planned_load_6_power": "Verbraucher 6: Leistung",
+          "planned_load_6_end": "Verbraucher 6: Restzeit oder Endzeit (optional)"
         }
       },
       "dashboard": {

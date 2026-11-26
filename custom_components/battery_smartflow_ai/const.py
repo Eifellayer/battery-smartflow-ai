@@ -39,7 +39,7 @@ def virtual_device_model(language: str | None) -> str:
 
 INTEGRATION_MANUFACTURER = "PalmManiac"
 INTEGRATION_MODEL = "Home Assistant Integration"
-INTEGRATION_VERSION = "6.0.10-eifellayer.23"
+INTEGRATION_VERSION = "6.0.10-eifellayer.24"
 
 # V5 native Zendure discovery is observation-only in the first development
 # build. The App Token is account discovery material and must never be copied
@@ -93,6 +93,7 @@ CONF_ADDITIONAL_BATTERY_DISCHARGE_ENTITY = "additional_battery_discharge_entity"
 CONF_PV_FORECAST_TODAY_ENTITY = "pv_forecast_today_entity"
 CONF_PV_FORECAST_TOMORROW_ENTITY = "pv_forecast_tomorrow_entity"
 CONF_PV_FORECAST_CONFIG_ENTRIES = "pv_forecast_config_entries"
+CONF_PLANNED_LOADS = "planned_loads"
 
 # Zendure Steuer-Entitäten
 CONF_AC_MODE_ENTITY = "ac_mode_entity"            # select input/output

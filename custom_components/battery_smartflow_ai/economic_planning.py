@@ -8,6 +8,7 @@ import math
 from .core.economic_schedule import EconomicSlot
 from .core.models.market import MarketPrice
 from .learned_planning import LearnedSlotModel, expected_consumption_until
+from .planned_loads import PlannedLoadInterval, planned_energy_kwh
 
 
 def import_price_preview(now: datetime, market: MarketPrice) -> dict:
@@ -38,8 +39,13 @@ def economic_slots(
     forecast_base_load_w: float,
     current_net_load_w: float,
     solar_intervals: tuple[tuple[datetime, float, float], ...],
+    planned_loads: tuple[PlannedLoadInterval, ...] = (),
 ) -> tuple[EconomicSlot, ...]:
-    """Return up to 24 hours of contiguous tariffs, including the live slot."""
+    """Return up to 24 hours of contiguous tariffs, including the live slot.
+
+    ``planned_loads`` adds known consumers to every future slot. The live
+    slot already contains them in the measured load.
+    """
 
     if not market.valid or market.forecast is None or not market.is_dynamic:
         return ()
@@ -67,7 +73,7 @@ def economic_slots(
                 expected_consumption_until(load_model, cursor, end)
                 if load_model is not None
                 else forecast_base_load_w * hours / 1000
-            )
+            ) + planned_energy_kwh(planned_loads, cursor, end)
             solar_kwh = 0.0
             for solar_start, solar_hours, solar_wh in solar_intervals:
                 if solar_hours <= 0 or not math.isfinite(solar_wh):

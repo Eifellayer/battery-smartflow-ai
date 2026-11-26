@@ -607,5 +607,8 @@
   "member_charge_charging_confirmed": "charging (measured)",
   "member_charge_stop_requested": "stop requested, still charging",
   "member_charge_stopped_confirmed": "paused until the next window",
-  "member_charge_finished": "grid charging finished"
+  "member_charge_finished": "grid charging finished",
+  "planned_loads_title": "Planned consumers in the forecast",
+  "planned_loads_until": "until",
+  "planned_loads_average": "daily average"
 }

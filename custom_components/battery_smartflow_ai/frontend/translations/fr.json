@@ -549,5 +549,8 @@
   "option_native_capacity_override_kwh": "Correction manuelle de capacité (kWh)",
   "option_native_zendure_always_smart_mode_1": "Maintenir SmartMode 1 en veille",
   "options_loading": "Chargement de la configuration du groupe…",
-  "options_open_failed": "Impossible d’ouvrir la boîte de dialogue. Message technique :"
+  "options_open_failed": "Impossible d’ouvrir la boîte de dialogue. Message technique :",
+  "planned_loads_title": "Consommateurs planifiables dans la prévision",
+  "planned_loads_until": "jusqu'à",
+  "planned_loads_average": "moyenne journalière"
 }

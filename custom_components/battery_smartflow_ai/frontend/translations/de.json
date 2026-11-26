@@ -623,5 +623,8 @@
   "member_charge_charging_confirmed": "lädt (gemessen)",
   "member_charge_stop_requested": "Stopp angefordert, lädt noch",
   "member_charge_stopped_confirmed": "pausiert bis zum nächsten Fenster",
-  "member_charge_finished": "Netzladen beendet"
+  "member_charge_finished": "Netzladen beendet",
+  "planned_loads_title": "Planbare Verbraucher in der Prognose",
+  "planned_loads_until": "bis",
+  "planned_loads_average": "Tagesdurchschnitt"
 }

@@ -35,6 +35,7 @@ from .const import (
     CONF_PV_FORECAST_TODAY_ENTITY,
     CONF_PV_FORECAST_TOMORROW_ENTITY,
     CONF_PV_FORECAST_CONFIG_ENTRIES,
+    CONF_PLANNED_LOADS,
     CONF_PRICE_EXPORT_ENTITY,
     CONF_PRICE_NOW_ENTITY,
     CONF_DYNAMIC_FEED_IN_PRICE_ENTITY,
@@ -167,6 +168,10 @@ from .core.economic_schedule import EconomicBattery, plan_economic_dispatch, pla
 from .economic_planning import economic_slots, import_price_preview
 from .group_grid_charging import (
     eligible_grid_charge_members, member_grid_charge_policy, summer_grid_charge_budget_kwh,
+)
+from .group_handover import handover_barrier_devices
+from .planned_loads import (
+    describe_intervals, parse_planned_loads, parse_power_w, planned_load_intervals, update_average,
 )
 from .group_charge_diagnostics import active_dispatch_index, evaluate_member, member_charge_windows
 from .learned_planning import (
@@ -1277,10 +1282,12 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         market = ctx.import_market_price
         if market is None:
             return {"status": "price_data_missing"}, None
+        planned = self._planned_load_intervals(ctx.now, include_average_loads=not learned_ready)
         slots = economic_slots(
             ctx.now, market, load_model=load_model if learned_ready else None,
             forecast_base_load_w=forecast_base_load_w,
             current_net_load_w=current_net_load_w, solar_intervals=solar_intervals,
+            planned_loads=planned,
         )
         if not slots:
             return {"status": "price_data_missing"}, None
@@ -1370,6 +1377,8 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         if summer_grid_charge:
             summary["summer_grid_charge"] = summer_grid_charge
+        if planned:
+            summary["planned_loads"] = describe_intervals(planned, self._planned_load_names())
         for field, devices_field in (
             ("grid_charge_kwh", "grid_charge_by_device"), ("discharge_kwh", "discharge_by_device"),
         ):
@@ -1417,6 +1426,53 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not dispatch_active:
             return summary, None
         return summary, power_w
+
+    def _planned_load_names(self) -> dict[str, str]:
+        names = {}
+        for load in parse_planned_loads(self.entry.options.get(CONF_PLANNED_LOADS)):
+            state = self.hass.states.get(load.power_entity)
+            names[load.power_entity] = str(
+                (state.attributes.get("friendly_name") if state is not None else None)
+                or load.power_entity
+            )
+        return names
+
+    def _planned_load_intervals(self, now, *, include_average_loads: bool):
+        """Known consumers for the economic plan; never stops the plan."""
+
+        try:
+            loads = parse_planned_loads(self.entry.options.get(CONF_PLANNED_LOADS))
+            if not loads:
+                self._persist.pop("planned_load_averages", None)
+                return ()
+            now = dt_util.as_utc(now)
+            states = {}
+            for load in loads:
+                for entity_id in (load.power_entity, load.end_entity):
+                    if entity_id:
+                        states[entity_id] = self.hass.states.get(entity_id)
+            stored = self._persist.get("planned_load_averages")
+            averages = dict(stored) if isinstance(stored, Mapping) else {}
+            for load in loads:
+                if load.end_entity is not None:
+                    averages.pop(load.power_entity, None)
+                    continue
+                power_w = parse_power_w(states.get(load.power_entity))
+                if power_w is not None:
+                    averages[load.power_entity] = update_average(
+                        averages.get(load.power_entity), now=now, power_w=power_w,
+                    )
+            self._persist["planned_load_averages"] = {
+                load.power_entity: averages[load.power_entity]
+                for load in loads if load.power_entity in averages
+            }
+            return planned_load_intervals(
+                loads, now=now, states=states, averages=averages,
+                include_average_loads=include_average_loads,
+            )
+        except Exception:  # noqa: BLE001 - a broken sensor must not stop planning
+            _LOGGER.debug("Planned loads could not be evaluated", exc_info=True)
+            return ()
 
     def _member_charge_diagnostics(self, now, runtime, dispatch, snapshots, charge_limits_w):
         """Describe for every member what is planned, requested and measured."""
@@ -4896,48 +4952,12 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 }
 
                     if pending_handover is None:
-                        reductions: set[str] = set()
-                        increases: set[str] = set()
-                        for device_id, target_value in signed_targets.items():
-                            old_item = previous.get(device_id)
-                            old_value = (
-                                float(old_item.get("power_w", 0.0))
-                                if isinstance(old_item, Mapping)
-                                else 0.0
-                            )
-                            if isinstance(old_item, Mapping) and (
-                                (old_value * target_value < -0.5)
-                                or abs(target_value) + 0.5 < abs(old_value)
-                            ):
-                                reductions.add(device_id)
-                            if (
-                                abs(target_value) > abs(old_value) + 0.5
-                                or old_value * target_value < -0.5
-                            ):
-                                increases.add(device_id)
-                            observed_direction, observed_w, observed_at = measured_flow(device_id)
-                            target_direction = (
-                                "charge" if target_value > 0.5
-                                else "discharge" if target_value < -0.5
-                                else None
-                            )
-                            target_magnitude = abs(target_value)
-                            # A lagging same-direction measurement is not a
-                            # new handover: an increasing setpoint on this
-                            # device must not be interrupted by a zero command.
-                            # Genuine direction changes and actual target
-                            # reductions still require the existing barrier.
-                            if observed_direction is not None and (
-                                observed_direction != target_direction
-                                or (
-                                    device_id not in increases
-                                    and observed_w > target_magnitude
-                                    + GROUP_HANDOVER_POWER_TOLERANCE_W
-                                )
-                            ):
-                                reductions.add(device_id)
+                        reductions = handover_barrier_devices(
+                            previous, signed_targets, measured_flow,
+                            tolerance_w=GROUP_HANDOVER_POWER_TOLERANCE_W,
+                        )
 
-                        if reductions and increases:
+                        if reductions:
                             handover_ids = reductions
                             self._persist["group_control_handover_pending"] = {
                                 "group_id": active_group_id,

@@ -288,12 +288,31 @@
         "description": "Sélectionnez la zone de paramètres à modifier. Les valeurs de régulation propres à l’appareil sont gérées automatiquement par le profil sélectionné.",
         "menu_options": {
           "general": "Général",
+          "planned_loads": "Consommateurs planifiables",
           "dashboard": "Tableau de bord HEMS",
           "expert": "Mode expert",
           "smart_mode": "Mode Smart Zendure",
           "native_zendure": "Test Zendure natif",
           "training": "Entraînement de régulation",
           "debug": "Mode débogage"
+        }
+      },
+      "planned_loads": {
+        "title": "Consommateurs planifiables",
+        "description": "Les consommateurs dont le besoin est connu à l'avance sont ajoutés à la charge de base dans la prévision. Avec un capteur de temps restant ou d'heure de fin (par exemple une imprimante 3D), la puissance actuelle compte jusqu'à la fin de la tâche. Sans ce capteur (par exemple un aquarium), la puissance moyenne du dernier jour compte. Les consommateurs spontanés n'ont pas leur place ici. Réduisez la charge de base de la moyenne des consommateurs indiqués ici.",
+        "data": {
+          "planned_load_1_power": "Consommateur 1 : puissance",
+          "planned_load_1_end": "Consommateur 1 : temps restant ou heure de fin (facultatif)",
+          "planned_load_2_power": "Consommateur 2 : puissance",
+          "planned_load_2_end": "Consommateur 2 : temps restant ou heure de fin (facultatif)",
+          "planned_load_3_power": "Consommateur 3 : puissance",
+          "planned_load_3_end": "Consommateur 3 : temps restant ou heure de fin (facultatif)",
+          "planned_load_4_power": "Consommateur 4 : puissance",
+          "planned_load_4_end": "Consommateur 4 : temps restant ou heure de fin (facultatif)",
+          "planned_load_5_power": "Consommateur 5 : puissance",
+          "planned_load_5_end": "Consommateur 5 : temps restant ou heure de fin (facultatif)",
+          "planned_load_6_power": "Consommateur 6 : puissance",
+          "planned_load_6_end": "Consommateur 6 : temps restant ou heure de fin (facultatif)"
         }
       },
       "native_zendure": {"title": "Connexion Zendure native", "description": "Saisissez le jeton d’application Home Assistant créé dans l’application Zendure. Un masque fixe de points indique qu’un jeton est enregistré ; il ne représente ni le jeton ni sa longueur. La sélection d’un appareil n’active pas le contrôle ; l’interrupteur séparé à l’étape suivante est requis.", "data": {"native_zendure_app_token": "Jeton d’application Zendure", "disable_native_zendure_test": "Désactiver et supprimer le test Zendure natif"}, "data_description": {"native_zendure_app_token": "Conservez le masque inchangé pour réutiliser le jeton enregistré, ou remplacez-le par un nouveau jeton Home Assistant complet.", "disable_native_zendure_test": "Arrête la connexion et supprime le jeton. Z-HA n’est pas modifié."}},

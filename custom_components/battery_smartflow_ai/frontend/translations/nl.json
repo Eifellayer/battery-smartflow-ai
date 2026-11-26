@@ -531,5 +531,8 @@
   "topology_record_in_use": "Dit item wordt nog gebruikt door een apparaatuitgang of circuit.",
   "topology_record_missing": "Het geselecteerde topologie-item bestaat niet meer.",
   "options_loading": "Groepsconfiguratie laden …",
-  "options_open_failed": "Het dialoogvenster kon niet worden geopend. Technische melding:"
+  "options_open_failed": "Het dialoogvenster kon niet worden geopend. Technische melding:",
+  "planned_loads_title": "Planbare verbruikers in de prognose",
+  "planned_loads_until": "tot",
+  "planned_loads_average": "daggemiddelde"
 }

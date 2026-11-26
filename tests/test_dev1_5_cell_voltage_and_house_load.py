@@ -361,6 +361,33 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert handover_w > 0
         assert any(limit > 0 for limit in boundary["_member_limits_w"].values())
 
+        # A running print is part of the forecast and shows up in the plan.
+        assert "planned_loads" not in summary
+        coordinator.entry.options["planned_loads"] = [
+            {"power_entity": "sensor.printer_power", "end_entity": "sensor.printer_remaining"},
+            {"power_entity": "sensor.aquarium_power", "end_entity": None},
+        ]
+        states = {
+            "sensor.printer_power": SimpleNamespace(
+                state="180", attributes={"unit_of_measurement": "W", "friendly_name": "Drucker"}),
+            "sensor.printer_remaining": SimpleNamespace(
+                state="300", attributes={"unit_of_measurement": "min", "device_class": "duration"}),
+            "sensor.aquarium_power": SimpleNamespace(
+                state="60", attributes={"unit_of_measurement": "W", "friendly_name": "Aquarium"}),
+        }
+        coordinator.hass = SimpleNamespace(
+            async_add_executor_job=executor, states=SimpleNamespace(get=states.get),
+        )
+        planned_summary, planned_charge_w = await get_plan("winter", 0.40, 0.48)
+        assert [(item["name"], item["kind"], item["power_w"]) for item in planned_summary["planned_loads"]] == [
+            ("Drucker", "until_end", 180), ("Aquarium", "average", 60),
+        ]
+        assert coordinator._persist["planned_load_averages"]["sensor.aquarium_power"]["w"] == 60
+        # The small fixture battery is already full-planned; the extra load
+        # must not lower the purchase.
+        assert planned_summary["top_up_kwh"] == summary["top_up_kwh"]
+        assert abs(planned_charge_w - charge_w) < 1e-6
+
         weak_solar = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 1, 100),))
         summer, charge_w = await get_plan("summer", 0.20, 0.40, weak_solar)
         assert summer["status"] == "active_partial_forecast"

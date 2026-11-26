@@ -1424,6 +1424,9 @@ class BatterySmartFlowDashboard extends HTMLElement {
       <p>${this._escape(this._t(`cost_${plan.status}`))}</p>
       ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}${solarReserve}
       ${memberCharging ? `<h4>${this._escape(this._t("member_charge_title"))}</h4>${memberCharging}` : ""}
+      ${(plan.planned_loads || []).length ? `<h4>${this._escape(this._t("planned_loads_title"))}</h4>${plan.planned_loads.map((load) =>
+        `<p><strong>${this._escape(load.name)}</strong> · ${this._escape(String(load.power_w))} W · ${this._escape(
+          load.until ? `${this._t("planned_loads_until")} ${clock(load.until)}` : this._t("planned_loads_average"))}</p>`).join("")}` : ""}
     </div>`;
   }
 

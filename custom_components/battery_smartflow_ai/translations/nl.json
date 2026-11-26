@@ -288,12 +288,31 @@
         "description": "Kies welk instellingenonderdeel je wilt bewerken. Apparaatspecifieke regelwaarden worden automatisch beheerd door het geselecteerde apparaatprofiel.",
         "menu_options": {
           "general": "Algemeen",
+          "planned_loads": "Planbare verbruikers",
           "dashboard": "HEMS-dashboard",
           "expert": "Expertmodus",
           "smart_mode": "Zendure Smart Mode",
           "native_zendure": "Native Zendure-test",
           "training": "Regelingstraining",
           "debug": "Debugmodus"
+        }
+      },
+      "planned_loads": {
+        "title": "Planbare verbruikers",
+        "description": "Verbruikers waarvan het verbruik vooraf bekend is, telt de planning bovenop de basislast mee. Met een sensor voor resterende tijd of eindtijd (bijvoorbeeld een 3D-printer) telt het huidige vermogen tot het einde van de taak. Zonder zo'n sensor (bijvoorbeeld een aquarium) telt het gemiddelde vermogen van de afgelopen dag. Spontane verbruikers horen hier niet. Verlaag de basislast met het gemiddelde van de hier ingevoerde verbruikers.",
+        "data": {
+          "planned_load_1_power": "Verbruiker 1: vermogen",
+          "planned_load_1_end": "Verbruiker 1: resterende tijd of eindtijd (optioneel)",
+          "planned_load_2_power": "Verbruiker 2: vermogen",
+          "planned_load_2_end": "Verbruiker 2: resterende tijd of eindtijd (optioneel)",
+          "planned_load_3_power": "Verbruiker 3: vermogen",
+          "planned_load_3_end": "Verbruiker 3: resterende tijd of eindtijd (optioneel)",
+          "planned_load_4_power": "Verbruiker 4: vermogen",
+          "planned_load_4_end": "Verbruiker 4: resterende tijd of eindtijd (optioneel)",
+          "planned_load_5_power": "Verbruiker 5: vermogen",
+          "planned_load_5_end": "Verbruiker 5: resterende tijd of eindtijd (optioneel)",
+          "planned_load_6_power": "Verbruiker 6: vermogen",
+          "planned_load_6_end": "Verbruiker 6: resterende tijd of eindtijd (optioneel)"
         }
       },
       "native_zendure": {"title": "Native Zendure-verbinding", "description": "Voer het Home Assistant-app-token uit de Zendure-app in. Een vast puntenmasker geeft aan dat een token is opgeslagen; het is niet het token of de lengte ervan. Alleen een apparaat selecteren activeert de besturing niet; daarvoor is de aparte schakelaar in de volgende stap vereist.", "data": {"native_zendure_app_token": "Zendure app-token", "disable_native_zendure_test": "Native Zendure-test uitschakelen en verwijderen"}, "data_description": {"native_zendure_app_token": "Laat het puntenmasker ongewijzigd om het opgeslagen token opnieuw te gebruiken, of vervang het door een volledig nieuw Home Assistant-app-token.", "disable_native_zendure_test": "Stopt de verbinding en verwijdert het token. Z-HA blijft ongewijzigd."}},
