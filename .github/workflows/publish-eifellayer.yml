@@ -58,15 +58,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 30
           persist-credentials: false
       - name: Create the release once (later pushes never overwrite it)
         run: |
           tag="${GITHUB_REF_NAME}"
+          # Notes come from the commit whose subject starts with the version,
+          # not from follow-up fixes pushed to the same branch.
+          sha=$(git log -30 --format=%H --grep="^${tag}:" | head -1)
+          sha=${sha:-$GITHUB_SHA}
+          { git log -1 --format=%s "$sha" | sed "s/^${tag}: *//"; echo; \
+            git log -1 --format=%b "$sha"; } \
+            | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists"; exit 0
+            body=$(gh release view "$tag" --json body --jq .body)
+            if [ -z "$body" ]; then
+              gh release edit "$tag" --notes-file notes.md
+              echo "Filled empty notes of $tag"
+            else
+              echo "Release $tag already exists"
+            fi
+            exit 0
           fi
-          git log -1 --format=%b | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
           gh release create "$tag" --target "${GITHUB_SHA}" --latest \
             --title "Battery SmartFlow AI $tag" \
             --notes-file notes.md
