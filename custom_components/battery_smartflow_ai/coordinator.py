@@ -168,6 +168,7 @@ from .economic_planning import economic_slots, import_price_preview
 from .group_grid_charging import (
     eligible_grid_charge_members, member_grid_charge_policy, summer_grid_charge_budget_kwh,
 )
+from .group_charge_diagnostics import active_dispatch_index, evaluate_member, member_charge_windows
 from .learned_planning import (
     LearningSample,
     LearningChargePowerSample,
@@ -1375,17 +1376,67 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     summary[field] = {**windows[0], "windows": windows}
                 else:
                     summary[field] = windows[0]
-        # Ignore sub-Wh targets. Avoid division by a nearly elapsed slot.
-        if not dispatch_active or first.slot.hours * 3600 < 10:
-            return summary, 0.0 if dispatch_active else None
-        power_w = (first.grid_charge_kwh - first.discharge_kwh) * 1000 / first.slot.hours
-        if batteries:
-            member_energy = first.grid_charge_by_device if power_w > 0 else first.discharge_by_device
-            summary["_member_limits_w"] = {
-                device_id: energy * 1000 / first.slot.hours
+        # A slot with only seconds left cannot carry a target. Use the
+        # following slot instead of stopping every member at each boundary.
+        current = schedule.dispatch[active_dispatch_index(schedule.dispatch)]
+        usable = dispatch_active and current.slot.hours * 3600 >= 10
+        power_w = (
+            (current.grid_charge_kwh - current.discharge_kwh) * 1000 / current.slot.hours
+            if usable else 0.0
+        )
+        member_limits = None
+        if batteries and usable:
+            member_energy = current.grid_charge_by_device if power_w > 0 else current.discharge_by_device
+            member_limits = {
+                device_id: energy * 1000 / current.slot.hours
                 for device_id, energy in member_energy.items()
             }
+            summary["_member_limits_w"] = member_limits
+        if batteries and dispatch_active:
+            summary["member_charging"] = self._member_charge_diagnostics(
+                ctx.now, runtime, schedule.dispatch, snapshots,
+                member_limits if power_w > 0 else None,
+            )
+        if not dispatch_active:
+            return summary, None
         return summary, power_w
+
+    def _member_charge_diagnostics(self, now, runtime, dispatch, snapshots, charge_limits_w):
+        """Describe for every member what is planned, requested and measured."""
+
+        try:
+            states = runtime.fresh_device_state_map()
+        except Exception:  # noqa: BLE001 - diagnostics must never stop control
+            states = {}
+        memory = getattr(self, "_member_charge_memory", None)
+        if not isinstance(memory, dict):
+            memory = {}
+        sent_targets = self._persist.get("group_control_last_targets", {})
+        if not isinstance(sent_targets, Mapping):
+            sent_targets = {}
+        result = {}
+        for device_id, snapshot in snapshots.items():
+            measured = getattr(states.get(device_id), "ac_input_power_w", None)
+            watts = None
+            if measured is not None and getattr(measured, "valid", False) and measured.observed_at is not None:
+                age = (dt_util.as_utc(now) - dt_util.as_utc(measured.observed_at)).total_seconds()
+                value = _to_float(measured.value, None)
+                if value is not None and math.isfinite(value) and 0 <= age <= 60:
+                    watts = max(0.0, value)
+            planned_w = float((charge_limits_w or {}).get(device_id, 0.0))
+            # Prefer the command that was actually sent in the last cycle.
+            sent = sent_targets.get(device_id)
+            target_w = _to_float(sent.get("power_w"), None) if isinstance(sent, Mapping) else None
+            item, memory[device_id] = evaluate_member(
+                memory.get(device_id), now=now,
+                windows=member_charge_windows(dispatch, device_id),
+                target_w=planned_w if target_w is None else target_w,
+                measured_ac_input_w=watts,
+            )
+            item["planned_w"] = round(planned_w)
+            result[str(snapshot["name"])] = item
+        self._member_charge_memory = {key: memory[key] for key in snapshots}
+        return result
 
     def _group_feedback_sample(self, runtime, *, now, grid_age_s, grid_valid):
         """Use only complete, recent group AC measurements, never DC battery flow."""

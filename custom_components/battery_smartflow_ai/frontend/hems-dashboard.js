@@ -1366,7 +1366,8 @@ class BatterySmartFlowDashboard extends HTMLElement {
           <td>${actions || "–"}</td></tr>`;
       });
       const windowSummary = (title, ranges, help) => {
-        const times = ranges.slice(0, 3).map(({ start, end, members }) =>
+        // List every range: a hidden later window reads like an unplanned charge.
+        const times = ranges.map(({ start, end, members }) =>
           `<li>${this._escape(time(start))} – ${this._escape(time(end))}${members ? ` · ${this._escape(members)}` : ""}</li>`).join("");
         return times || help
           ? `<section class="price-preview-ranges"><h3>${t(title)}</h3>
@@ -1409,9 +1410,20 @@ class BatterySmartFlowDashboard extends HTMLElement {
         ${amount(member.forecast_surplus_kwh)} kWh ${this._escape(this._t("cost_expected_pv_surplus"))} +
         ${amount(member.extra_buffer_pct)} ${this._escape(this._t("cost_extra_pv_buffer"))}</p>`;
     }).join("");
+    const clock = (iso) => new Date(iso).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+    const memberCharging = Object.entries(plan.member_charging || {}).map(([name, member]) => {
+      const windows = (member.windows || []).map(({ start, end }) => `${clock(start)} – ${clock(end)}`).join(", ");
+      const measured = Number.isFinite(member.ac_input_w)
+        ? `${member.ac_input_w.toLocaleString(locale)} W ${this._t("member_charge_measured")}` : this._t("member_charge_no_measurement");
+      const changed = member.plan_changed_at
+        ? ` · ${this._t("member_charge_plan_changed")} ${clock(member.plan_changed_at)}` : "";
+      return `<p><strong>${this._escape(name)}</strong> · ${this._escape(this._t(`member_charge_${member.state}`))}
+        · ${this._escape(measured)}${windows ? ` · ${this._escape(windows)}` : ""}${this._escape(changed)}</p>`;
+    }).join("");
     return `<div class="energy-budget"><h4>${this._escape(this._t("cost_plan"))}</h4>
       <p>${this._escape(this._t(`cost_${plan.status}`))}</p>
       ${metrics.length ? `<dl>${metrics.join("")}</dl>` : ""}${solarReserve}
+      ${memberCharging ? `<h4>${this._escape(this._t("member_charge_title"))}</h4>${memberCharging}` : ""}
     </div>`;
   }
 

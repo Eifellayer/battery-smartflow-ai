@@ -322,17 +322,17 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
 
         coordinator.hass = SimpleNamespace(async_add_executor_job=executor)
 
-        async def get_plan(season, price, peak, forecast=None):
+        async def get_plan(season, price, peak, forecast=None, at=None, cheap_hours=1):
             points = tuple(MarketPricePoint(
-                now + timedelta(hours=i), now + timedelta(hours=i + 1), price if i == 0 else peak,
-            ) for i in range(7))
+                now + timedelta(hours=i), now + timedelta(hours=i + 1), price if i < cheap_hours else peak,
+            ) for i in range(8))
             market = MarketPrice(
                 MarketPriceDirection.IMPORT, price, "EUR", "€/kWh", now, "test",
                 MarketPriceValidity.VALID, True, False, MarketPriceForecast(points),
             )
             return await coordinator._economic_group_plan(
                 SimpleNamespace(
-                    now=now, ai_mode="automatic", season=season, soc_min=20, soc_max=95,
+                    now=at or now, ai_mode="automatic", season=season, soc_min=20, soc_max=95,
                     grid_sensor_valid=True, pv_sensor_valid=True, soc_limits_valid=True,
                     power_limits_valid=True, forecast=forecast, import_market_price=market,
                     export_market_price=None, profit_margin_pct=27,
@@ -347,6 +347,19 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert summary["grid_charge_kwh"]["members"] == ["SolarFlow 800 Plus"]
         assert summary["_member_limits_w"]["Hyper 2000"] == 0
         assert 0 < charge_w <= 800
+        diagnostics = summary["member_charging"]
+        assert diagnostics["Hyper 2000"]["state"] == "not_planned"
+        assert diagnostics["Hyper 2000"]["planned_w"] == 0
+        assert diagnostics["SolarFlow 800 Plus"]["planned_w"] == round(charge_w)
+        assert diagnostics["SolarFlow 800 Plus"]["windows"]
+
+        # Five seconds before a tariff boundary the target of the following
+        # cheap hour applies; the members are not stopped and restarted.
+        boundary, handover_w = await get_plan(
+            "winter", 0.40, 0.60, at=now + timedelta(minutes=59, seconds=55), cheap_hours=2,
+        )
+        assert handover_w > 0
+        assert any(limit > 0 for limit in boundary["_member_limits_w"].values())
 
         weak_solar = SimpleNamespace(power_intervals=((now + timedelta(hours=1), 1, 100),))
         summer, charge_w = await get_plan("summer", 0.20, 0.40, weak_solar)

@@ -596,5 +596,16 @@
   "topology_record_in_use": "This item is still used by a device output or circuit.",
   "topology_record_missing": "The selected topology item no longer exists.",
   "options_loading": "Loading group setup …",
-  "options_open_failed": "The dialog could not be opened. Technical message:"
+  "options_open_failed": "The dialog could not be opened. Technical message:",
+  "member_charge_title": "Grid charging per device",
+  "member_charge_measured": "AC input measured",
+  "member_charge_no_measurement": "no current measurement",
+  "member_charge_plan_changed": "plan changed at",
+  "member_charge_not_planned": "not planned",
+  "member_charge_planned_later": "planned later",
+  "member_charge_charge_requested": "charge requested, not measured yet",
+  "member_charge_charging_confirmed": "charging (measured)",
+  "member_charge_stop_requested": "stop requested, still charging",
+  "member_charge_stopped_confirmed": "paused until the next window",
+  "member_charge_finished": "grid charging finished"
 }
