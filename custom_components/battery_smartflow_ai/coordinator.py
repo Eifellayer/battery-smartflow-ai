@@ -2092,13 +2092,18 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         )
         if selected_scope:
-            raw_forecast_entries = tuple(
+            scoped_forecast_entries = tuple(
                 dict.fromkeys(
                     forecast_id
                     for source in selected_scope.get("pv_sources", ())
                     for forecast_id in source.get("forecast_entry_ids", ())
                 )
             )
+            # Eifellayer: a group whose PV sources carry no forecast of their
+            # own keeps the solar forecast chosen in the main settings, instead
+            # of silently running without any forecast.
+            if scoped_forecast_entries:
+                raw_forecast_entries = scoped_forecast_entries
         scoped_grid_mode = selected_scope.get("grid_mode")
         grid_mode = (
             GRID_MODE_SINGLE
