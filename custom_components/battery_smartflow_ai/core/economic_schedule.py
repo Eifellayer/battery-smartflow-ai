@@ -13,6 +13,25 @@ import math
 # on each side of the battery (81% round trip).
 ASSUMED_CONVERSION_EFFICIENCY = 0.90
 _EPSILON = 1e-8
+# Hold stored energy back for a later slot only when that slot costs at least
+# this much more per kWh (price units of the tariff, e.g. EUR/kWh). Smaller
+# differences save almost nothing but leave grid import in the current slot.
+CURRENT_SLOT_PREFERENCE = 0.03
+
+
+def _current_slot_bonus(price: float, cheapest_same_slot_purchase: float | None) -> float:
+    """Return the extra value of discharging in the live slot.
+
+    The bonus never makes a purchase in the same slot look profitable, so it
+    cannot cause a battery to charge and discharge at once.
+    """
+
+    if not math.isfinite(price) or price <= 0:
+        return 0.0
+    bonus = CURRENT_SLOT_PREFERENCE
+    if cheapest_same_slot_purchase is not None and math.isfinite(cheapest_same_slot_purchase):
+        bonus = min(bonus, cheapest_same_slot_purchase - price - 4 * _EPSILON)
+    return max(0.0, bonus)
 
 
 @dataclass(frozen=True)
@@ -151,19 +170,25 @@ def plan_economic_dispatch(
     _add_edge(graph, source, 0, available, -1.0)
     terminal = _add_edge(graph, len(slots) - 1, sink, capacity, 0.0)
     demand_edges = []
+    margin = max(0.0, margin_pct) / 100.0
+    first_price = slots[0].price
+    first_bonus = _current_slot_bonus(
+        first_price,
+        (first_price + max(0.0, first_price) * margin) / round_trip if allow_grid_charge else None,
+    )
     for index, slot in enumerate(slots):
         if index + 1 < len(slots):
             _add_edge(graph, index, index + 1, capacity, 0.0)
         ac_discharge_limit = max(0.0, max_output_w * slot.hours / 1000.0)
         demand = min(ac_discharge_limit, max(0.0, slot.net_load_kwh)) if slot.price > 0 else 0.0
-        demand_edges.append(_add_edge(graph, index, sink, demand, -slot.price))
+        value = slot.price + (first_bonus if index == 0 else 0.0)
+        demand_edges.append(_add_edge(graph, index, sink, demand, -value))
     _send_profitable_flow(graph, source, sink)
     # Optional inflows must reach local demand, including at negative prices.
     terminal.capacity = 0.0
 
     purchase_edges = []
     solar_edges = []
-    margin = max(0.0, margin_pct) / 100.0
     for index, slot in enumerate(slots):
         ac_charge_limit = max(0.0, max_input_w * slot.hours / 1000.0)
         surplus = min(ac_charge_limit, max(0.0, -slot.net_load_kwh))
@@ -216,9 +241,23 @@ def plan_split_economic_dispatch(
     source = grid_budgets + len(batteries)
     sink = source + 1
     graph: list[list[_Edge]] = [[] for _ in range(sink + 1)]
+    first_price = slots[0].price
+    same_slot_purchases = [
+        max(first_price / battery.round_trip_efficiency,
+            first_price * (1 + battery.minimum_spread_pct / 100) - 2 * _EPSILON)
+        for battery in batteries
+        if battery.allow_grid_charge and battery.round_trip_efficiency > 0 and (
+            battery.max_grid_purchase_price is None
+            or first_price <= battery.max_grid_purchase_price
+        )
+    ]
+    first_bonus = _current_slot_bonus(
+        first_price, min(same_slot_purchases) if same_slot_purchases else None,
+    )
     for index, slot in enumerate(slots):
         load = min(max_output_w * slot.hours / 1000, max(0.0, slot.net_load_kwh))
-        _add_edge(graph, demand + index, sink, load if slot.price > 0 else 0.0, -slot.price)
+        value = slot.price + (first_bonus if index == 0 else 0.0)
+        _add_edge(graph, demand + index, sink, load if slot.price > 0 else 0.0, -value)
 
     terminal_edges = []
     available = []

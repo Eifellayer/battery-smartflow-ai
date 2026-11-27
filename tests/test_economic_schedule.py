@@ -213,3 +213,59 @@ def test_schedule_uses_live_load_first_then_timed_solar():
     )
     assert [slot.price for slot in slots[:2]] == pytest.approx([0.20, 0.25])
     assert [slot.net_load_kwh for slot in slots[:4]] == pytest.approx([0.15, -0.30, -0.30, 0.2])
+
+
+def _stored_split(prices, loads, stored=0.5):
+    start = datetime(2026, 11, 27, 16, 45, tzinfo=timezone.utc)
+    slots = [EconomicSlot(
+        start + timedelta(minutes=15 * i), start + timedelta(minutes=15 * (i + 1)), price, load,
+    ) for i, (price, load) in enumerate(zip(prices, loads, strict=True))]
+    batteries = [
+        EconomicBattery("Hyper", 1.92, stored, 1200, 1200, 0.79, 27, False),
+        EconomicBattery("800", 1.92, stored, 1000, 800, 0.87, 20, False),
+    ]
+    return plan_split_economic_dispatch(
+        slots, batteries, max_input_w=2200, max_output_w=2000, export_price=0.0,
+    )
+
+
+def test_live_slot_is_covered_when_later_slots_are_only_slightly_dearer():
+    # 61 ct now, 62 ct later: holding energy back would save ~1 ct/kWh.
+    result = _stored_split([0.61, 0.62, 0.62, 0.62], [0.175] * 4, stored=0.2)
+    assert result.dispatch[0].discharge_kwh == pytest.approx(0.175)
+
+
+def test_energy_is_still_saved_for_clearly_dearer_slots():
+    result = _stored_split([0.61, 0.65, 0.65, 0.65], [0.175] * 4, stored=0.2)
+    assert result.dispatch[0].discharge_kwh == pytest.approx(0.0, abs=1e-6)
+
+
+def test_single_plan_prefers_live_slot_below_three_cents():
+    start = datetime(2026, 11, 27, 16, 45, tzinfo=timezone.utc)
+    slots = [EconomicSlot(
+        start + timedelta(minutes=15 * i), start + timedelta(minutes=15 * (i + 1)), price, 0.2,
+    ) for i, price in enumerate([0.61, 0.62, 0.62])]
+    kwargs = dict(usable_capacity_kwh=2, max_input_w=1000, max_output_w=2000,
+                  export_price=0.0, margin_pct=27)
+    near = plan_economic_dispatch(slots, stored_kwh=0.25, **kwargs)
+    assert near.dispatch[0].discharge_kwh == pytest.approx(0.2)
+    far = plan_economic_dispatch(
+        [replace_price(slot, 0.66) if i else slot for i, slot in enumerate(slots)],
+        stored_kwh=0.25, **kwargs,
+    )
+    assert far.dispatch[0].discharge_kwh < 0.2
+
+
+def test_live_slot_bonus_never_buys_and_discharges_at_once():
+    start = datetime(2026, 11, 27, 3, tzinfo=timezone.utc)
+    slots = [EconomicSlot(start, start + timedelta(hours=1), 0.02, 0.3),
+             EconomicSlot(start + timedelta(hours=1), start + timedelta(hours=2), 0.02, 0.3)]
+    result = plan_economic_dispatch(
+        slots, usable_capacity_kwh=2, stored_kwh=0, max_input_w=1000, max_output_w=2000,
+        export_price=0.0, margin_pct=0,
+    )
+    assert result.grid_top_up_kwh == pytest.approx(0.0, abs=1e-9)
+
+
+def replace_price(slot, price):
+    return EconomicSlot(slot.start, slot.end, price, slot.net_load_kwh)
