@@ -577,6 +577,50 @@ def _native_battery_power_totals(states) -> tuple[float, float] | None:
     return charge_total, discharge_total
 
 
+def _native_battery_power_partial_totals(states) -> tuple[float, float] | None:
+    """Sum the readable charge/discharge power of every fresh main system.
+
+    Used when :func:`_native_battery_power_totals` cannot confirm a complete
+    reading for every discovered system (for example an idle cloud device
+    that has not republished its battery power). Falling back to the
+    selected system alone would drop the output of the other systems from
+    the house load, so the house load collapsed to the grid import and the
+    group was commanded to deliver only the remaining grid import, swinging
+    between two values. A device without any readable value counts as 0 W.
+    """
+
+    states = tuple(states or ())
+    if len(states) < 2:
+        return None
+
+    def reading(item) -> float | None:
+        if item is None or not getattr(item, "valid", False):
+            return None
+        value = _to_float(item.value, None)
+        if value is None or not math.isfinite(value):
+            return None
+        return max(0.0, value)
+
+    charge_total = 0.0
+    discharge_total = 0.0
+    any_reading = False
+    for state in states:
+        charge = reading(getattr(state, "charge_power_w", None))
+        discharge = reading(getattr(state, "discharge_power_w", None))
+        if charge is None and discharge is None:
+            charge = reading(getattr(state, "ac_input_power_w", None))
+            discharge = reading(getattr(state, "ac_output_power_w", None))
+        if charge is None and discharge is None:
+            continue
+        any_reading = True
+        charge_total += charge or 0.0
+        discharge_total += discharge or 0.0
+
+    if not any_reading:
+        return None
+    return charge_total, discharge_total
+
+
 def _clamp_season_counter(value: Any) -> int:
     """Limit the season hysteresis counter to a sane range.
 
@@ -7824,12 +7868,27 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             native_battery_totals = _native_battery_power_totals(
                 all_native_states
             )
+            if native_battery_totals is None:
+                state_map_getter = getattr(
+                    native_runtime, "fresh_device_state_map", None
+                )
+                partial_states = (
+                    tuple(state_map_getter().values())
+                    if callable(state_map_getter)
+                    else ()
+                )
+                native_battery_totals = _native_battery_power_partial_totals(
+                    partial_states
+                )
+                if native_battery_totals is not None:
+                    house_load_battery_power_source = "native_multi_system_partial"
             if native_battery_totals is not None:
                 (
                     house_load_battery_charge_w,
                     house_load_battery_discharge_w,
                 ) = native_battery_totals
-                house_load_battery_power_source = "native_multi_system"
+                if house_load_battery_power_source != "native_multi_system_partial":
+                    house_load_battery_power_source = "native_multi_system"
 
             house_load = max(
                 0.0,

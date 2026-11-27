@@ -72,6 +72,7 @@ from custom_components.battery_smartflow_ai.coordinator import (
     _discharge_price_plan,
     _group_power_display,
     _native_battery_power_totals,
+    _native_battery_power_partial_totals,
 )
 from custom_components.battery_smartflow_ai.group_feedback import GroupFeedback
 
@@ -655,3 +656,44 @@ def test_cell_voltage_emergency_latches_are_independent_per_system() -> None:
         {"system-a": 3.18, "system-b": 3.25}
     )
     assert second == {"system-a": False, "system-b": False}
+
+
+def test_partial_totals_keep_discharging_member_when_idle_member_is_unreadable() -> None:
+    """Hyper idle via cloud without battery readings, SF800 discharging.
+
+    The house load must still include the SF800 output; otherwise it equals
+    the grid import and the group only replaces that import.
+    """
+
+    idle_hyper = SimpleNamespace(
+        charge_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+        discharge_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+        ac_input_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+        ac_output_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+    )
+    sf800 = _device_state(0.0, 230.0)
+    states = (idle_hyper, sf800)
+
+    assert _native_battery_power_totals(states) is None
+    assert _native_battery_power_partial_totals(states) == (0.0, 230.0)
+    grid_import = 250.0
+    assert max(0.0, grid_import + 230.0) == 480.0
+
+
+def test_partial_totals_use_ac_power_when_battery_power_is_missing() -> None:
+    hyper = SimpleNamespace(
+        charge_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+        discharge_power_w=MeasuredValue.absent(ValueValidity.MISSING),
+        ac_input_power_w=MeasuredValue.available(0.0),
+        ac_output_power_w=MeasuredValue.available(300.0),
+    )
+    assert _native_battery_power_partial_totals(
+        (hyper, _device_state(0.0, 200.0))
+    ) == (0.0, 500.0)
+
+
+def test_partial_totals_need_two_systems_and_one_reading() -> None:
+    assert _native_battery_power_partial_totals((_device_state(0.0, 100.0),)) is None
+    assert _native_battery_power_partial_totals(
+        (_device_state(None, None), _device_state(None, None))
+    ) is None
