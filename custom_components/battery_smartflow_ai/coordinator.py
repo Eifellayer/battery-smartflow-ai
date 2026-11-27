@@ -1220,7 +1220,13 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if item["device_id"] in members
         }
-        if set(snapshots) != members:
+        # Eifellayer: plan with the members that are reachable right now; an
+        # offline member must not block the economic plan of the others.
+        snapshots = {
+            device_id: item for device_id, item in snapshots.items()
+            if item["available"]
+        }
+        if not snapshots:
             return {"status": "device_data_missing"}, None
         capacity = stored = 0.0
         devices = []
@@ -1719,16 +1725,42 @@ class ZendureSmartFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             maximum_soc_pct=base_maximum_soc,
         )
         snapshot_by_id = {item["device_id"]: item for item in snapshots}
-        if any(device_id not in snapshot_by_id for device_id in members):
-            return ("group_member_unavailable", None)
 
-        # A missing, offline, unsupported, unconfigured, HEMS-blocked, or
-        # protected member may still hold its previous output. Pause the whole
-        # group; never compensate by increasing the other devices blindly.
+        # Eifellayer: a member that is missing or offline (e.g. lost WLAN) can
+        # neither receive commands nor report power. Instead of pausing the
+        # whole group, keep regulating with the members that are still
+        # reachable. Their targets come from the grid measurement, so any
+        # output the offline device may still hold is already part of what
+        # they compensate for. The group pauses only when no member is left.
+        reachable_members = tuple(
+            device_id for device_id in members
+            if device_id in snapshot_by_id
+            and snapshot_by_id[device_id]["available"]
+        )
+        offline_members = tuple(
+            device_id for device_id in members
+            if device_id not in reachable_members
+        )
+        if not reachable_members:
+            return (
+                "group_member_unavailable"
+                if any(device_id not in snapshot_by_id for device_id in members)
+                else "group_member_offline",
+                None,
+            )
+        if offline_members:
+            self._persist["group_control_offline_members"] = [
+                _public_group_device_id(device_id) for device_id in offline_members
+            ]
+            members = reachable_members
+        else:
+            self._persist.pop("group_control_offline_members", None)
+
+        # An unsupported, unconfigured, HEMS-blocked, or protected member may
+        # still hold its previous output. Pause the whole group; never
+        # compensate by increasing the other devices blindly.
         for device_id in members:
             snapshot = snapshot_by_id[device_id]
-            if not snapshot["available"]:
-                return ("group_member_offline", None)
             if not snapshot["configured"]:
                 return ("group_member_setup_incomplete", None)
             if not snapshot["supported"]:

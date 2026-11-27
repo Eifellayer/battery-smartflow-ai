@@ -312,6 +312,33 @@ def test_group_handover_uses_ac_power_when_solar_keeps_charging() -> None:
         assert split_targets["SolarFlow 800 Plus"].input_limit_w == 350
         options.pop(SETTING_MAX_CHARGE)
 
+        # An offline member (e.g. Hyper 2000 lost WLAN) must not pause the
+        # group: the reachable member keeps regulating, also when the offline
+        # one is the selected controller. Only a fully offline group pauses.
+        online_snapshots = runtime.shadow_allocation_snapshots
+        for offline in ("Hyper 2000", "SolarFlow 800 Plus"):
+            runtime.shadow_allocation_snapshots = lambda offline=offline, **kwargs: [
+                {**item, "available": item["device_id"] != offline}
+                for item in online_snapshots(**kwargs)
+            ]
+            status, degraded = coordinator._productive_group_targets(
+                DeviceCommand("output", output_limit_w=500), runtime
+            )
+            assert status == "group_control_active"
+            assert offline not in degraded
+            assert sum(cmd.output_limit_w for cmd in degraded.values()) == 500
+            assert coordinator._persist["group_control_offline_members"]
+        runtime.shadow_allocation_snapshots = lambda **kwargs: [
+            {**item, "available": False} for item in online_snapshots(**kwargs)
+        ]
+        status, paused = coordinator._productive_group_targets(
+            DeviceCommand("output", output_limit_w=500), runtime
+        )
+        assert (status, paused) == ("group_member_offline", None)
+        runtime.shadow_allocation_snapshots = online_snapshots
+        coordinator._productive_group_targets(DeviceCommand("output", output_limit_w=0), runtime)
+        assert "group_control_offline_members" not in coordinator._persist
+
         snapshots = runtime.shadow_allocation_snapshots
         runtime.shadow_allocation_snapshots = lambda **kwargs: [
             {**item, "soc_pct": 20} for item in snapshots(**kwargs)
