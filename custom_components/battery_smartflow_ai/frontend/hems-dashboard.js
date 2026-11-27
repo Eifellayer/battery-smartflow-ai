@@ -523,7 +523,7 @@ class BatterySmartFlowDashboard extends HTMLElement {
       .toLowerCase()
       .split(/[-_]/)[0];
     const safeLanguage = /^[a-z]{2,3}$/.test(language) ? language : "en";
-    const version = this._panel?.config?.dashboard_version || "1.0.76";
+    const version = this._panel?.config?.dashboard_version || "1.0.77";
     const url = `/battery_smartflow_ai/translations/${safeLanguage}.json?v=${encodeURIComponent(version)}`;
     if (url === this._portalTranslationUrl) return;
     this._portalTranslationUrl = url;
@@ -1228,6 +1228,22 @@ class BatterySmartFlowDashboard extends HTMLElement {
         summary = this._t("health_price_below_threshold");
       } else if (["economic_schedule_hold", "economic_planning_charge", "economic_price_discharge"].includes(reason?.state)) {
         summary = this._t(`health_${reason.state}`);
+        // Eifellayer: say so when the plan deliberately covers only part of
+        // the load to make the stored energy last through the expensive hours.
+        const covered = Number(allocation?.requested_power_w);
+        const load = Number(state("house_load")?.state);
+        const ceiling = Number(allocation?.group_max_discharge_w);
+        if (
+          reason?.state === "economic_price_discharge" &&
+          Number.isFinite(covered) && Number.isFinite(load) && covered > 0 &&
+          load - covered > 40 &&
+          (!Number.isFinite(ceiling) || covered < ceiling - 50)
+        ) {
+          const locale = this._hass?.locale?.language;
+          summary = this._t("health_economic_price_discharge_partial")
+            .replace("{covered}", Math.round(covered).toLocaleString(locale))
+            .replace("{load}", Math.round(load).toLocaleString(locale));
+        }
       } else if (mode?.state === "standby" && ["idle", "standby", "state_idle"].includes(reason?.state)) {
         summary = this._t("health_standby");
       } else {

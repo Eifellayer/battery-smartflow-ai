@@ -473,6 +473,7 @@
   "health_economic_schedule_hold": "Standby. The cost plan requests no power in the current interval.",
   "health_economic_planning_charge": "Charging from the grid for later high-priced demand.",
   "health_economic_price_discharge": "The battery covers household demand in this tariff slot.",
+  "health_economic_price_discharge_partial": "The battery is covering {covered} of {load} W. Its charge will not last through all expensive hours, so the plan spreads it out instead of covering everything now and running empty later.",
   "system_health": "System health",
   "all_online": "All systems online",
   "attention": "Attention required",

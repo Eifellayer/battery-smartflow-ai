@@ -489,6 +489,7 @@
   "health_economic_schedule_hold": "Bereitschaft. Der Kostenplan sieht im aktuellen Zeitfenster keine Lade- oder Entladeleistung vor.",
   "health_economic_planning_charge": "Netzladung für späteren teuren Hausverbrauch.",
   "health_economic_price_discharge": "Der Akku deckt den Hausverbrauch im aktuellen Preisfenster.",
+  "health_economic_price_discharge_partial": "Der Akku deckt gerade {covered} von {load} W. Seine Ladung reicht nicht für alle teuren Stunden, deshalb teilt die Planung sie auf, statt jetzt alles zu decken und später leer zu sein.",
   "system_health": "Systemzustand",
   "all_online": "Alle Systeme online",
   "attention": "Prüfung erforderlich",

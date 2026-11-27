@@ -53,7 +53,7 @@ _SF800PLUS_IMAGE_URL = "/battery_smartflow_ai/images/sf800plus.png"
 _PANEL_NAME = "battery-smartflow-ai-hems-dashboard"
 _STATIC_PATH_KEY = f"{DOMAIN}_dashboard_static_registered"
 _STATIC_PATH_LOCK_KEY = f"{DOMAIN}_dashboard_static_registration_lock"
-DASHBOARD_VERSION = "1.0.76"
+DASHBOARD_VERSION = "1.0.77"
 
 _SYSTEM_SIGNAL_SENSOR_KEYS = (
     "native_zendure_status",
@@ -294,7 +294,7 @@ async def _async_update_dashboard_panel_locked(hass: HomeAssistant) -> None:
                     for key in (
                         "engine_health", "ai_status", "decision_reason", "season_mode",
                         "price_now", "effective_discharge_threshold", "grid_power",
-                        "next_action_state",
+                        "next_action_state", "house_load",
                     )
                 },
                 "shadow_allocation_entity": entity_registry.async_get_entity_id(
